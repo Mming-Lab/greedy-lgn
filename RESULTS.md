@@ -298,3 +298,44 @@ Findings:
    overconfident error can poison the summed counts but costs only one vote).
 
 Full run log: [issue #8](https://github.com/Mming-Lab/greedy-lgn/issues/8).
+
+## MNIST scaling: width × ensembles push past 90%
+
+The absolute-accuracy follow-up to the MNIST first pass, testing the levers identified
+above against each other. All runs: `--dataset mnist --skip-input --epochs 30
+--max-layers 14`, RTX 3060 Laptop 6 GB. A code-level enabler shipped with this
+experiment: `hard_batched` now scales its evaluation chunk inversely with layer width
+(bit-exact, identical chunking for 500-gate configs), which keeps the `[B, G, 16]`
+temporaries inside 6 GB at 4,000+ gates.
+
+| config | hard test acc | runtime |
+|---|---|---|
+| 2,000 gates (first-pass best, for reference) | 84.6% | ~7 min |
+| 2,000 gates ×4 ensemble, soft vote | 87.3% | ~15 min |
+| 2,000 gates + W=2 blocks (single) | 84.7% | ~5 min |
+| 4,000 gates (single) | 89.8% (depth 7) | ~8 min |
+| 4,000 gates, 2× epochs (single) | 89.9% | ~15 min |
+| **4,000 gates ×4 ensemble, soft vote** | **90.9%** | ~28 min |
+
+Findings:
+
+1. **Width is the dominant lever, and it has not saturated.** Doubling width
+   2,000 → 4,000 buys +5.2 pt for a single network (84.6% → 89.8%) — far more than any
+   other lever at this scale. Simplification keeps ~42–45% of gates (28,000 → 12,517
+   at 4,000 gates), bit-exact as always.
+2. **Ensembling stacks at every width, with diminishing returns as members
+   strengthen**: the ×4 vote adds +8.4 pt at 500 gates, +3.2 pt at 2,000, +1.1 pt at
+   4,000. Combined best: **90.86%** (4 × 4,000 + skip, soft vote) — the repo's first
+   crossing of 90% on MNIST.
+3. **Two levers confirmed dead at this scale, reported honestly**: doubling epochs
+   adds +0.1 pt (89.77% → 89.89%), and windowed lookahead on top of width+skip adds
+   +0.1 pt (84.57% → 84.65% at 2,000 gates) — consistent with the digits finding that
+   the window does not stack with skip. The myopia deficit appears to be whatever
+   width and skip have not already fixed.
+4. **Honest positioning unchanged in kind, narrowed in degree**: the gap to
+   difflogic-scale results (~97.7%) shrinks from ~13 pt to ~7 pt, still with far
+   smaller budgets (≤4,000 gates/layer, 30 epochs, single machine). Remaining known
+   levers: 8,000-gate layers (VRAM-feasible with the new chunk budgeting), better
+   input binarization, and convolutional wiring.
+
+Full run log: [issue #9](https://github.com/Mming-Lab/greedy-lgn/issues/9).
