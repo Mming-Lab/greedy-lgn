@@ -10,6 +10,7 @@ Usage:
     python experiment.py --device cuda       # same experiment on GPU
     python experiment.py --skip-input        # re-expose input bits to every layer
     python experiment.py --skip-all          # DenseNet-style: all previous layers
+    python experiment.py --window 4 --commit 1   # receding horizon: look 4 ahead, commit 1
     python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30   # MNIST
 """
 import argparse, json, time
@@ -81,21 +82,41 @@ def group_sum(h, n_class, tau):
 def accuracy(logits, y):
     return (logits.argmax(-1) == y).float().mean().item()
 
-def train_layer(layer, Xin, yin, epochs, n_class, tau, lr, batch=0, seed=0):
-    opt = torch.optim.Adam(layer.parameters(), lr=lr)
-    if not batch or batch >= len(Xin):   # full-batch (default; matches original)
-        for _ in range(epochs):
+def next_pool(h, X, pool_prev, cfg):
+    """あるレイヤーの出力hを受けて、その次のレイヤーの配線プールを作る
+    (soft/hard共通。run_greedyの凍結時と窓内softフォワードで同一規則を使う)"""
+    if cfg.skip_all:      # DenseNet-style: input + every previous layer
+        return torch.cat([pool_prev, h], 1)
+    if cfg.skip_input:    # input + previous layer only
+        return torch.cat([X, h], 1)
+    return h
+
+def train_window(win, pool0, X, y, cfg, tau, seed):
+    """窓内のW層をsoftのまま逆伝搬で共同学習する(receding horizonの1ステップ)。
+    損失は窓の最終層のCE(--win-loss last)か全層平均(--win-loss all)。
+    W=1のとき従来のgreedy 1層学習と厳密に一致する。"""
+    opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
+    def loss(pool, Xb, yb):
+        h, terms = None, []
+        for L in win:
+            h = L(pool)
+            if cfg.win_loss == "all":
+                terms.append(F.cross_entropy(group_sum(h, cfg.n_class, tau), yb))
+            pool = next_pool(h, Xb, pool, cfg)
+        return (sum(terms) / len(terms) if cfg.win_loss == "all"
+                else F.cross_entropy(group_sum(h, cfg.n_class, tau), yb))
+    if not cfg.batch or cfg.batch >= len(pool0):   # full-batch (default)
+        for _ in range(cfg.epochs):
             opt.zero_grad()
-            F.cross_entropy(group_sum(layer(Xin), n_class, tau), yin).backward()
+            loss(pool0, X, y).backward()
             opt.step()
         return
     g = torch.Generator().manual_seed(seed)
-    for _ in range(epochs):
-        for idx in torch.randperm(len(Xin), generator=g).split(batch):
-            idx = idx.to(Xin.device)
+    for _ in range(cfg.epochs):
+        for idx in torch.randperm(len(pool0), generator=g).split(cfg.batch):
+            idx = idx.to(pool0.device)
             opt.zero_grad()
-            F.cross_entropy(group_sum(layer(Xin[idx]), n_class, tau),
-                            yin[idx]).backward()
+            loss(pool0[idx], X[idx], y[idx]).backward()
             opt.step()
 
 @torch.no_grad()
@@ -105,35 +126,44 @@ def hard_batched(layer, x, chunk=8192):  # chunked to bound the [B, G, 16] tempo
 
 # ----------------------------- (A) greedy layer-wise -----------------------------
 def run_greedy(Xtr, Xte, ytr, yte, cfg):
+    W, J = cfg.window, cfg.commit
     print("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
+          + (f" [window={W} commit={J} loss={cfg.win_loss}]" if W > 1 else "")
           + (" [skip-all wiring]" if cfg.skip_all else
              " [skip-input wiring]" if cfg.skip_input else ""))
     tau = float(np.sqrt(cfg.gates / cfg.n_class))
     layers, pool_tr, pool_te = [], Xtr, Xte
     best_acc, best_depth, since_best = -1.0, 0, 0
     t0 = time.time()
-    for d in range(1, cfg.max_layers + 1):
-        L = LogicLayer(pool_tr.shape[1], cfg.gates, seed=cfg.seed * 100 + d).to(cfg.device)
-        train_layer(L, pool_tr, ytr, cfg.epochs, cfg.n_class, tau, cfg.lr,
-                    cfg.batch, cfg.seed * 1000 + d)
-        h_tr, h_te = hard_batched(L, pool_tr), hard_batched(L, pool_te)  # freeze on HARD bits
-        a_te = accuracy(group_sum(h_te, cfg.n_class, tau), yte)
-        a_tr = accuracy(group_sum(h_tr, cfg.n_class, tau), ytr)
-        print(f"  layer {d}: hard probe  train={a_tr:.4f}  test={a_te:.4f}")
-        layers.append(L)
-        # next layer's wiring pool: gate outputs, optionally with earlier bits re-exposed
-        if cfg.skip_all:      # DenseNet-style: input + every previous layer
-            pool_tr, pool_te = torch.cat([pool_tr, h_tr], 1), torch.cat([pool_te, h_te], 1)
-        elif cfg.skip_input:  # input + previous layer only
-            pool_tr, pool_te = torch.cat([Xtr, h_tr], 1), torch.cat([Xte, h_te], 1)
-        else:
-            pool_tr, pool_te = h_tr, h_te
-        if a_te > best_acc + 1e-4:
-            best_acc, best_depth, since_best = a_te, d, 0
-        else:
-            since_best += 1
-            if since_best >= cfg.patience:
-                print(f"  -> stop: no improvement for {cfg.patience} layers")
+    stop = False
+    while not stop and len(layers) < cfg.max_layers:
+        d0 = len(layers)
+        # 凍結済みプレフィックスの上にW層の窓を新規作成(スライドごとに再計画。
+        # コミットされなかったlookahead層は捨てる = receding horizon)
+        win, in_dim = [], pool_tr.shape[1]
+        for k in range(W):
+            win.append(LogicLayer(in_dim, cfg.gates,
+                                  seed=cfg.seed * 100 + d0 + k + 1).to(cfg.device))
+            in_dim = (in_dim + cfg.gates if cfg.skip_all else
+                      Xtr.shape[1] + cfg.gates if cfg.skip_input else cfg.gates)
+        train_window(win, pool_tr, Xtr, ytr, cfg, tau, cfg.seed * 1000 + d0 + 1)
+        for L in win[:J]:  # 窓の先頭J層だけ離散化して凍結(HARDビット上で確定)
+            h_tr, h_te = hard_batched(L, pool_tr), hard_batched(L, pool_te)
+            a_te = accuracy(group_sum(h_te, cfg.n_class, tau), yte)
+            a_tr = accuracy(group_sum(h_tr, cfg.n_class, tau), ytr)
+            layers.append(L)
+            print(f"  layer {len(layers)}: hard probe  train={a_tr:.4f}  test={a_te:.4f}")
+            pool_tr = next_pool(h_tr, Xtr, pool_tr, cfg)
+            pool_te = next_pool(h_te, Xte, pool_te, cfg)
+            if a_te > best_acc + 1e-4:
+                best_acc, best_depth, since_best = a_te, len(layers), 0
+            else:
+                since_best += 1
+                if since_best >= cfg.patience:
+                    print(f"  -> stop: no improvement for {cfg.patience} layers")
+                    stop = True
+                    break
+            if len(layers) >= cfg.max_layers:
                 break
     print(f"  greedy: best hard test acc = {best_acc:.4f} at depth {best_depth}"
           f"  ({time.time() - t0:.0f}s)\n")
@@ -329,6 +359,17 @@ def main():
     p.add_argument("--skip-all", action="store_true",
                    help="DenseNet-style: wiring pool = input bits + ALL previous"
                         " layers' outputs (overrides --skip-input)")
+    p.add_argument("--window", type=int, default=1,
+                   help="receding-horizon lookahead: jointly train WINDOW fresh soft"
+                        " layers with backprop on top of the frozen prefix"
+                        " (1 = plain greedy, the original behaviour)")
+    p.add_argument("--commit", type=int, default=1,
+                   help="layers discretized+frozen per window slide (1..WINDOW;"
+                        " commit=window = non-overlapping block greedy)")
+    p.add_argument("--win-loss", choices=["last", "all"], default="last",
+                   help="window training loss: CE at the last window layer only"
+                        " (pure lookahead) or averaged over all window layers"
+                        " (deep supervision)")
     p.add_argument("--dataset", choices=["digits", "mnist"], default="digits",
                    help="digits: sklearn 8x8 (CPU-friendly). mnist: 28x28, 70k"
                         " samples (GPU + --batch recommended)")
@@ -336,6 +377,8 @@ def main():
                    help="minibatch size (0 = full batch, the original behaviour;"
                         " required in practice for mnist on a 6 GB GPU)")
     cfg = p.parse_args()
+    if not (1 <= cfg.commit <= cfg.window):
+        p.error("--commit must satisfy 1 <= commit <= window")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
