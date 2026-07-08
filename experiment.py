@@ -11,6 +11,7 @@ Usage:
     python experiment.py --skip-input        # re-expose input bits to every layer
     python experiment.py --skip-all          # DenseNet-style: all previous layers
     python experiment.py --window 4 --commit 1   # receding horizon: look 4 ahead, commit 1
+    python experiment.py --ensemble 4            # 4 independent nets + voting
     python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30   # MNIST
 """
 import argparse, json, time
@@ -168,6 +169,45 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
     print(f"  greedy: best hard test acc = {best_acc:.4f} at depth {best_depth}"
           f"  ({time.time() - t0:.0f}s)\n")
     return layers[:best_depth], best_acc, best_depth
+
+# ----------------------------- (D) ensemble of greedy networks -----------------------------
+def hard_forward(layers, X, cfg):
+    """凍結済みネットワーク全体をhardで評価して最終層の出力ビットを返す"""
+    pool, h = X, None
+    for L in layers:
+        h = hard_batched(L, pool)
+        pool = next_pool(h, X, pool, cfg)
+    return h
+
+def run_ensemble(Xtr, Xte, ytr, yte, cfg):
+    """独立に学習したM本のgreedyネットワーク(シードのみ変える)を横に並べて投票。
+    soft vote: 各メンバーのGroupSumカウントを合算してargmax
+               (= 最終層を連結した幅M倍のGroupSum readoutと数学的に等価)
+    majority : 各メンバーのargmaxで多数決。同数タイは合算カウントの大きい方
+               (0.99倍で正規化したスコアを足すので票数の優劣は覆らない)"""
+    M, base_seed = cfg.ensemble, cfg.seed
+    tau = float(np.sqrt(cfg.gates / cfg.n_class))
+    members, member_acc, depths = [], [], []
+    for m in range(M):
+        cfg.seed = base_seed + m
+        print(f"--- ensemble member {m + 1}/{M} (seed {cfg.seed}) ---")
+        layers, acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
+        members.append(layers); member_acc.append(acc); depths.append(depth)
+    cfg.seed = base_seed
+    counts = torch.stack([group_sum(hard_forward(ls, Xte, cfg), cfg.n_class, tau)
+                          for ls in members])                    # [M, B, n_class]
+    soft_acc = accuracy(counts.sum(0), yte)
+    votes = F.one_hot(counts.argmax(-1), cfg.n_class).sum(0).float()
+    c = counts.sum(0)
+    t = (c - c.amin(1, keepdim=True)) / (c.amax(1, keepdim=True)
+                                         - c.amin(1, keepdim=True) + 1e-9)
+    maj_acc = accuracy(votes + 0.99 * t, yte)
+    print(f"=== (D) Ensemble vote over {M} members ===")
+    print(f"  member acc: {' / '.join(f'{a:.4f}' for a in member_acc)}"
+          f"  (mean {float(np.mean(member_acc)):.4f}, depths {depths})")
+    print(f"  soft vote (summed GroupSum counts) = {soft_acc:.4f}")
+    print(f"  majority vote (count tie-break)    = {maj_acc:.4f}\n")
+    return members, member_acc, depths, soft_acc, maj_acc
 
 # ----------------------------- (B) end-to-end baseline -----------------------------
 def run_e2e(Xtr, Xte, ytr, yte, depth, cfg):
@@ -370,6 +410,10 @@ def main():
                    help="window training loss: CE at the last window layer only"
                         " (pure lookahead) or averaged over all window layers"
                         " (deep supervision)")
+    p.add_argument("--ensemble", type=int, default=1,
+                   help="train ENSEMBLE independent greedy networks (seeds seed.."
+                        "seed+M-1) side by side and report soft-vote / majority-vote"
+                        " accuracy (1 = single network, the original behaviour)")
     p.add_argument("--dataset", choices=["digits", "mnist"], default="digits",
                    help="digits: sklearn 8x8 (CPU-friendly). mnist: 28x28, 70k"
                         " samples (GPU + --batch recommended)")
@@ -386,6 +430,29 @@ def main():
     print(f"data: {cfg.dataset}, {Xtr.shape[0]} train / {Xte.shape[0]} test,"
           f" {Xtr.shape[1]} input bits  (device={cfg.device}"
           + (f", batch={cfg.batch}" if cfg.batch else "") + ")\n")
+
+    if cfg.ensemble > 1:
+        members, member_acc, depths, soft_acc, maj_acc = run_ensemble(
+            Xtr, Xte, ytr, yte, cfg)
+        e2e_soft = e2e_hard = None
+        if not cfg.skip_e2e:
+            e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte,
+                                         cfg.e2e_depth or depths[0], cfg)
+        before = after = 0
+        for ls in members:  # メンバーごとに簡略化+ビット等価検証
+            b, a = simplify([L.cpu() for L in ls], Xte.cpu(), yte.cpu(), cfg)
+            before += b; after += a
+        summary = {"member_hard_test_acc": [round(a, 4) for a in member_acc],
+                   "member_mean": round(float(np.mean(member_acc)), 4),
+                   "ensemble_soft_vote_acc": round(soft_acc, 4),
+                   "ensemble_majority_vote_acc": round(maj_acc, 4),
+                   "depths": depths,
+                   "e2e_soft_test_acc": e2e_soft and round(e2e_soft, 4),
+                   "e2e_hard_test_acc": e2e_hard and round(e2e_hard, 4),
+                   "gates_before": before, "gates_after_simplify": after}
+        print("=== summary ===")
+        print(json.dumps(summary, indent=2))
+        return
 
     layers, greedy_acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
     e2e_soft = e2e_hard = None
