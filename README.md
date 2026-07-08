@@ -80,6 +80,23 @@ Three observations, stated honestly:
 
 Full run log: see [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
 
+## Memory-matched comparison: equal training memory, greedy wins
+
+Greedy's training-memory advantage (only one layer is ever soft) can be spent on width instead. With 4× wider layers (2,000 gates), greedy holds the same 32,000 float logits during training as the 4-layer end-to-end baseline:
+
+| config | float logits during training | hard-circuit test acc (seeds 1/2/3) | mean |
+|---|---|---|---|
+| greedy, 500 gates/layer | 8,000 | 88.2 / 88.0 / 88.9 | 88.4% |
+| greedy, 1,000 gates/layer | 16,000 | 92.7 (seed 1 only) | — |
+| **greedy, 2,000 gates/layer** | **32,000** | **94.7 / 95.3 / 94.9** | **95.0%** |
+| end-to-end, 500 × 4 layers | 32,000 | 93.6 / 90.4 / 90.4 | 91.5% |
+
+- **At equal training memory, greedy beats end-to-end on every seed tested** (mean +3.5 pt) and with much lower variance (0.6 pt spread vs 3.2 pt). Depth is still chosen automatically (4 on all seeds) and the discretization gap is still structurally zero, while e2e shows small seed-dependent gaps (e.g. +0.9 pt on seed 2).
+- **The honest cost: a larger inference circuit.** The memory-matched greedy circuit is ~5,300 gates after simplification vs 2,000 (raw) for e2e — greedy trades hardware area for training memory and cross-seed stability. (The simplification pass currently runs only in the greedy pipeline, so the e2e count is unsimplified.)
+- Same toy-scale caveats as above: one easy dataset, 450 test samples, 3 seeds.
+
+Full run logs: see [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
+
 ## Quick start
 
 ```bash
@@ -94,7 +111,7 @@ python experiment.py --device cuda --max-layers 40 --patience 40 --e2e-depth 40 
 ## Roadmap / open questions
 
 - [x] **Depth stress test**: done — backprop collapses to chance at ~12 layers while greedy keeps learning at 40 (see [above](#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12)). The open half of the question is making that depth *useful*: greedy accuracy still peaks early and decays.
-- [ ] **Memory-matched comparison**: give greedy a 4× wider layer (same training memory as end-to-end) and compare accuracy.
+- [x] **Memory-matched comparison**: done — at equal training memory (4× wider layers), greedy outperforms end-to-end on all seeds tested, 95.0% vs 91.5% mean (see [above](#memory-matched-comparison-equal-training-memory-greedy-wins)).
 - [ ] MNIST / CIFAR-10 on GPU, on top of [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
 - [ ] Skip connections (concatenate input bits into every layer's wiring pool) to counter information loss from local objectives.
 - [ ] Better local objectives: Forward-Forward goodness on binary vectors, [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses.
@@ -123,3 +140,5 @@ MIT
 現状の結果は正直に言って一長一短です:精度はend-to-end逆伝播に約5ポイント負けますが、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定、という利点があります。この交換が割に合う条件(深い回路・メモリ制約下)を探すのが上記ロードマップです。CPUで数分で再現できます。
 
 深さストレステスト(RTX 3060)では、**逆伝播は12層でチャンスレベル(10%)に崩壊**し、エポックを4倍にしても回復しませんでした(勾配消失)。一方**greedyは40層目でも学習が成立**します(train 69.9%)。ただしテスト精度のピークは深さ4のままで、深さを積むほど情報損失により単調劣化するため、「深さで生き残れる」と「深さを活かせる」は別問題です。後者の解決(skip connections)が次の課題です。
+
+メモリ等価比較では、greedyの層幅を4倍(2,000ゲート)にして学習時のfloatロジット数をe2eと同じ32,000個に揃えたところ、**テスト精度は3シード全てでe2eを上回りました**(平均95.0% vs 91.5%、バラつきもgreedyの方が小さい)。正直なコストとして、推論回路は簡略化後でも約5,300ゲートとe2e(2,000ゲート)の約2.7倍になります — 学習メモリと安定性をハードウェア面積で買うトレードオフです。
