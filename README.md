@@ -121,6 +121,22 @@ Classic residual addition (`x + f(x)`) does not exist in Boolean circuits, but i
 
 Full run logs: see [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
 
+## MNIST: the pattern replicates (first pass, small budget)
+
+Ported via `--dataset mnist` (28×28 → 3-threshold thermometer → 2,352 bits, standard 60k/10k split) with `--batch` minibatch training — full-batch training does not fit a 6 GB GPU at this scale; defaults remain full-batch and bit-identical for digits.
+
+| config | float logits during training | hard-circuit test acc |
+|---|---|---|
+| greedy, 500 gates/layer, no skip | 8,000 | 74.3% (depth 6) |
+| end-to-end, 500 × 4 layers | 32,000 | 80.1% (gap +0.1 pt) |
+| **greedy, 2,000 gates/layer + `--skip-input`** | **32,000** | **84.6% (depth 9)** |
+
+- **The digits-scale findings replicate on a 45× larger dataset**: at equal training memory, greedy + skip beats end-to-end by +4.5 pt, depth is chosen automatically, the discretization gap is structurally zero, and simplification removes 73% of the gates (18,000 → 4,814, verified bit-exact).
+- **Honest positioning: these absolute numbers are far below the difflogic literature** (~97.7% on MNIST, using tens of thousands of gates per layer and much larger training budgets). This is a deliberately small-budget first pass (≤2,000 gates/layer, 30 epochs/layer, single seed) where the meaningful comparison is greedy vs end-to-end *under the same budget*. Closing the absolute gap — wider layers, more epochs, better input binarization — is future work.
+- Runtime: ~13 min for the 2,000-gate greedy run on an RTX 3060 Laptop. CPU would take hours; `digits` remains the CPU-friendly configuration.
+
+Full run logs: see [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
+
 ## Quick start
 
 ```bash
@@ -131,13 +147,15 @@ python experiment.py --skip-e2e                           # greedy + simplificat
 python experiment.py --device cuda                        # same experiment on GPU (~10x faster)
 python experiment.py --device cuda --max-layers 40 --patience 40 --e2e-depth 40   # depth stress test
 python experiment.py --device cuda --gates 2000 --skip-input --max-layers 16 --skip-e2e   # best config (95.7% mean)
+python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --gates 2000 --skip-input --max-layers 10 --skip-e2e   # MNIST (GPU recommended)
 ```
 
 ## Roadmap / open questions
 
 - [x] **Depth stress test**: done — backprop collapses to chance at ~12 layers while greedy keeps learning at 40 (see [above](#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12)). The open half of the question is making that depth *useful*: greedy accuracy still peaks early and decays.
 - [x] **Memory-matched comparison**: done — at equal training memory (4× wider layers), greedy outperforms end-to-end on all seeds tested, 95.0% vs 91.5% mean (see [above](#memory-matched-comparison-equal-training-memory-greedy-wins)).
-- [ ] MNIST / CIFAR-10 on GPU, on top of [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
+- [x] MNIST: first pass done (`--dataset mnist --batch`) — greedy + skip beats e2e at equal training memory on MNIST too (84.6% vs 80.1%; see [above](#mnist-the-pattern-replicates-first-pass-small-budget)). Absolute accuracy is still far from difflogic-scale results; wider layers and better binarization are the next lever.
+- [ ] CIFAR-10 / larger widths, on top of [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
 - [x] Skip connections: done — `--skip-input` removes most of the depth decay (layer 40: 56.0% → 83.6%) and moves the accuracy peak deeper (see [above](#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth)). The DenseNet-style refinement (`--skip-all`) was also tested: flattest depth curve, but no accuracy win — `--skip-input` stays the default recommendation.
 - [ ] Better local objectives: Forward-Forward goodness on binary vectors, [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses.
 - [ ] Simplify *between* growth steps (currently done once at the end) and rewire the next layer to the simplified circuit.
@@ -169,3 +187,5 @@ MIT
 メモリ等価比較では、greedyの層幅を4倍(2,000ゲート)にして学習時のfloatロジット数をe2eと同じ32,000個に揃えたところ、**テスト精度は3シード全てでe2eを上回りました**(平均95.0% vs 91.5%、バラつきもgreedyの方が小さい)。正直なコストとして、推論回路は簡略化後でも約5,300ゲートとe2e(2,000ゲート)の約2.7倍になります — 学習メモリと安定性をハードウェア面積で買うトレードオフです。
 
 skip connections(`--skip-input`: 各層の配線候補に元の入力192ビットを常に含める。ゲート数は増えず配線のみ)では、深さによる劣化がほぼ解消しました(40層目: 56.0%→83.6%)。ピークも88.2%(深さ4)から90.4%(深さ8)に上がり、**初めて「深さが精度に貢献する」結果**が出ています。幅4倍と組み合わせると3シード平均**95.7%**で、本リポジトリの現時点の最良値です。
+
+MNIST(`--dataset mnist`、ミニバッチ学習`--batch`を追加実装)でも同じ構図が再現しました: メモリ等価でgreedy+skipがe2eに+4.5pt勝ち(84.6% vs 80.1%)、深さ9自動選択、簡略化で73%削減。ただし絶対値はdifflogic系の公表値(約97.7%、ゲート数は20倍以上)に遠く及ばない小予算の第一歩で、幅の拡大・二値化の改善が次の課題です。GPU推奨(RTX 3060で約13分、CPUだと数時間)。
