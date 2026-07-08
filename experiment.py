@@ -10,6 +10,7 @@ Usage:
     python experiment.py --device cuda       # same experiment on GPU
     python experiment.py --skip-input        # re-expose input bits to every layer
     python experiment.py --skip-all          # DenseNet-style: all previous layers
+    python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30   # MNIST
 """
 import argparse, json, time
 import numpy as np
@@ -57,7 +58,15 @@ class LogicLayer(nn.Module):
             -1, sel.view(1, -1, 1).expand(x.shape[0], -1, 1)).squeeze(-1)
 
 # ----------------------------- data -----------------------------
-def load_data(seed=0):
+def load_data(dataset="digits", seed=0):
+    if dataset == "mnist":
+        from sklearn.datasets import fetch_openml
+        X, y = fetch_openml("mnist_784", version=1, return_X_y=True,
+                            as_frame=False, parser="liac-arff")  # no pandas needed
+        y = y.astype(np.int64)                   # 28x28 pixels, values 0..255
+        Xb = np.concatenate([(X > t).astype(np.float32) for t in (63, 127, 191)], axis=1)
+        return (torch.tensor(Xb[:60000]), torch.tensor(Xb[60000:]),   # standard split
+                torch.tensor(y[:60000]), torch.tensor(y[60000:]))
     X, y = load_digits(return_X_y=True)          # 8x8 digits, values 0..16
     Xb = np.concatenate([(X > t).astype(np.float32) for t in (3, 7, 11)], axis=1)
     Xtr, Xte, ytr, yte = train_test_split(
@@ -72,12 +81,27 @@ def group_sum(h, n_class, tau):
 def accuracy(logits, y):
     return (logits.argmax(-1) == y).float().mean().item()
 
-def train_layer(layer, Xin, yin, epochs, n_class, tau, lr):
+def train_layer(layer, Xin, yin, epochs, n_class, tau, lr, batch=0, seed=0):
     opt = torch.optim.Adam(layer.parameters(), lr=lr)
+    if not batch or batch >= len(Xin):   # full-batch (default; matches original)
+        for _ in range(epochs):
+            opt.zero_grad()
+            F.cross_entropy(group_sum(layer(Xin), n_class, tau), yin).backward()
+            opt.step()
+        return
+    g = torch.Generator().manual_seed(seed)
     for _ in range(epochs):
-        opt.zero_grad()
-        F.cross_entropy(group_sum(layer(Xin), n_class, tau), yin).backward()
-        opt.step()
+        for idx in torch.randperm(len(Xin), generator=g).split(batch):
+            idx = idx.to(Xin.device)
+            opt.zero_grad()
+            F.cross_entropy(group_sum(layer(Xin[idx]), n_class, tau),
+                            yin[idx]).backward()
+            opt.step()
+
+@torch.no_grad()
+def hard_batched(layer, x, chunk=8192):  # chunked to bound the [B, G, 16] temporary
+    return layer.hard(x) if len(x) <= chunk else torch.cat(
+        [layer.hard(c) for c in x.split(chunk)])
 
 # ----------------------------- (A) greedy layer-wise -----------------------------
 def run_greedy(Xtr, Xte, ytr, yte, cfg):
@@ -90,8 +114,9 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
     t0 = time.time()
     for d in range(1, cfg.max_layers + 1):
         L = LogicLayer(pool_tr.shape[1], cfg.gates, seed=cfg.seed * 100 + d).to(cfg.device)
-        train_layer(L, pool_tr, ytr, cfg.epochs, cfg.n_class, tau, cfg.lr)
-        h_tr, h_te = L.hard(pool_tr), L.hard(pool_te)   # freeze on HARD bits
+        train_layer(L, pool_tr, ytr, cfg.epochs, cfg.n_class, tau, cfg.lr,
+                    cfg.batch, cfg.seed * 1000 + d)
+        h_tr, h_te = hard_batched(L, pool_tr), hard_batched(L, pool_te)  # freeze on HARD bits
         a_te = accuracy(group_sum(h_te, cfg.n_class, tau), yte)
         a_tr = accuracy(group_sum(h_tr, cfg.n_class, tau), ytr)
         print(f"  layer {d}: hard probe  train={a_tr:.4f}  test={a_te:.4f}")
@@ -124,19 +149,34 @@ def run_e2e(Xtr, Xte, ytr, yte, depth, cfg):
     opt = torch.optim.Adam([p for L in net for p in L.parameters()], lr=cfg.lr)
     epochs = min(cfg.epochs * depth, cfg.e2e_max_epochs)
     t0 = time.time()
+    g = torch.Generator().manual_seed(cfg.seed * 777)
     for _ in range(epochs):
-        opt.zero_grad()
-        h = Xtr
-        for L in net:
-            h = L(h)
-        F.cross_entropy(group_sum(h, cfg.n_class, tau), ytr).backward()
-        opt.step()
+        if cfg.batch and cfg.batch < len(Xtr):
+            for idx in torch.randperm(len(Xtr), generator=g).split(cfg.batch):
+                idx = idx.to(Xtr.device)
+                opt.zero_grad()
+                h = Xtr[idx]
+                for L in net:
+                    h = L(h)
+                F.cross_entropy(group_sum(h, cfg.n_class, tau), ytr[idx]).backward()
+                opt.step()
+        else:
+            opt.zero_grad()
+            h = Xtr
+            for L in net:
+                h = L(h)
+            F.cross_entropy(group_sum(h, cfg.n_class, tau), ytr).backward()
+            opt.step()
     with torch.no_grad():
-        hs, hh = Xte, Xte
+        chunks = []
+        for c in Xte.split(4096):   # chunked soft eval bounds the [B, G, 16] temporary
+            for L in net:
+                c = L(c)
+            chunks.append(c)
+        hs = torch.cat(chunks)
+        hh = Xte
         for L in net:
-            hs = L(hs)
-        for L in net:
-            hh = L.hard(hh)
+            hh = hard_batched(L, hh)
     soft = accuracy(group_sum(hs, cfg.n_class, tau), yte)
     hard = accuracy(group_sum(hh, cfg.n_class, tau), yte)
     print(f"  soft={soft:.4f}  discretized={hard:.4f}  gap={soft - hard:+.4f}"
@@ -289,13 +329,20 @@ def main():
     p.add_argument("--skip-all", action="store_true",
                    help="DenseNet-style: wiring pool = input bits + ALL previous"
                         " layers' outputs (overrides --skip-input)")
+    p.add_argument("--dataset", choices=["digits", "mnist"], default="digits",
+                   help="digits: sklearn 8x8 (CPU-friendly). mnist: 28x28, 70k"
+                        " samples (GPU + --batch recommended)")
+    p.add_argument("--batch", type=int, default=0,
+                   help="minibatch size (0 = full batch, the original behaviour;"
+                        " required in practice for mnist on a 6 GB GPU)")
     cfg = p.parse_args()
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
-    Xtr, Xte, ytr, yte = [t.to(cfg.device) for t in load_data()]
-    print(f"data: {Xtr.shape[0]} train / {Xte.shape[0]} test, {Xtr.shape[1]} input bits"
-          f"  (device={cfg.device})\n")
+    Xtr, Xte, ytr, yte = [t.to(cfg.device) for t in load_data(cfg.dataset)]
+    print(f"data: {cfg.dataset}, {Xtr.shape[0]} train / {Xte.shape[0]} test,"
+          f" {Xtr.shape[1]} input bits  (device={cfg.device}"
+          + (f", batch={cfg.batch}" if cfg.batch else "") + ")\n")
 
     layers, greedy_acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
     e2e_soft = e2e_hard = None
