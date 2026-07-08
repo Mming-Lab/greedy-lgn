@@ -8,6 +8,7 @@ Usage:
     python experiment.py                     # default config (a few minutes on CPU)
     python experiment.py --gates 200 --epochs 30 --max-layers 3   # quick smoke test
     python experiment.py --device cuda       # same experiment on GPU
+    python experiment.py --skip-input        # re-expose input bits to every layer
 """
 import argparse, json, time
 import numpy as np
@@ -79,19 +80,25 @@ def train_layer(layer, Xin, yin, epochs, n_class, tau, lr):
 
 # ----------------------------- (A) greedy layer-wise -----------------------------
 def run_greedy(Xtr, Xte, ytr, yte, cfg):
-    print("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ===")
+    print("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
+          + (" [skip-input wiring]" if cfg.skip_input else ""))
     tau = float(np.sqrt(cfg.gates / cfg.n_class))
-    layers, h_tr, h_te = [], Xtr, Xte
+    layers, pool_tr, pool_te = [], Xtr, Xte
     best_acc, best_depth, since_best = -1.0, 0, 0
     t0 = time.time()
     for d in range(1, cfg.max_layers + 1):
-        L = LogicLayer(h_tr.shape[1], cfg.gates, seed=cfg.seed * 100 + d).to(cfg.device)
-        train_layer(L, h_tr, ytr, cfg.epochs, cfg.n_class, tau, cfg.lr)
-        h_tr, h_te = L.hard(h_tr), L.hard(h_te)   # freeze on HARD bits
+        L = LogicLayer(pool_tr.shape[1], cfg.gates, seed=cfg.seed * 100 + d).to(cfg.device)
+        train_layer(L, pool_tr, ytr, cfg.epochs, cfg.n_class, tau, cfg.lr)
+        h_tr, h_te = L.hard(pool_tr), L.hard(pool_te)   # freeze on HARD bits
         a_te = accuracy(group_sum(h_te, cfg.n_class, tau), yte)
         a_tr = accuracy(group_sum(h_tr, cfg.n_class, tau), ytr)
         print(f"  layer {d}: hard probe  train={a_tr:.4f}  test={a_te:.4f}")
         layers.append(L)
+        # next layer's wiring pool: gate outputs, optionally with input bits re-exposed
+        if cfg.skip_input:
+            pool_tr, pool_te = torch.cat([Xtr, h_tr], 1), torch.cat([Xte, h_te], 1)
+        else:
+            pool_tr, pool_te = h_tr, h_te
         if a_te > best_acc + 1e-4:
             best_acc, best_depth, since_best = a_te, d, 0
         else:
@@ -142,11 +149,18 @@ def simplify(layers, Xte, yte, cfg):
     in_bits, G, D = Xte.shape[1], cfg.gates, len(layers)
     tau = float(np.sqrt(G / cfg.n_class))
     net, base = [], in_bits
+    skip = getattr(cfg, "skip_input", False)
     for li, L in enumerate(layers):
-        prev = 0 if li == 0 else base - G
+        prev = base - G  # global id of the previous layer's first gate (li > 0)
+        def src(j, li=li, prev=prev):
+            if li == 0:
+                return j                                  # wired to input bits
+            if skip:                                      # pool = [input || prev layer]
+                return j if j < in_bits else prev + (j - in_bits)
+            return prev + j                               # pool = prev layer only
         fn = L.logits.argmax(-1).tolist()
-        net.append([(base + i, int(L.ia[i]) + (prev if li else 0),
-                     int(L.ib[i]) + (prev if li else 0), fn[i]) for i in range(G)])
+        net.append([(base + i, src(int(L.ia[i])), src(int(L.ib[i])), fn[i])
+                    for i in range(G)])
         base += G
     total_before = D * G
     final_ids = [g[0] for g in net[-1]]
@@ -262,6 +276,9 @@ def main():
     p.add_argument("--device", default="cpu", help="cpu or cuda")
     p.add_argument("--e2e-depth", type=int, default=None,
                    help="override e2e baseline depth (default: greedy's chosen depth)")
+    p.add_argument("--skip-input", action="store_true",
+                   help="concatenate the input bits into every greedy layer's wiring"
+                        " pool (skip connections; e2e baseline is unaffected)")
     cfg = p.parse_args()
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
