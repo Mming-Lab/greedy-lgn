@@ -117,6 +117,8 @@ Classic residual addition (`x + f(x)`) does not exist in Boolean circuits, but i
 - **A hypothesis that did *not* survive the data**: we expected skip wiring to free the ~20% of gates that simplification reveals as pass-throughs (gates that only copy bits forward). The pass-through fraction stayed at ~20% with skip enabled. The benefit is information access, not gate savings — though skip circuits do simplify harder overall (47.8% of gates kept vs 65.8% without skip at the respective peaks).
 - The e2e baseline is unchanged by this flag (standard DLGN wiring); same toy-scale caveats as above.
 
+**DenseNet-style variant (`--skip-all`, negative result reported for honesty):** exposing *all* previous layers (not just the input) gives the flattest depth curve of all — 88.4% at layer 40, best 89.8% at depth 29 — but never beats `--skip-input`'s peak (90.4%), and at memory-matched width it is slightly *worse* (95.1% vs 95.7% mean over 3 seeds), plausibly because the ever-growing pool dilutes the random wiring. One striking side effect: dense circuits simplify dramatically harder — the 40-layer network shrinks to **23.8%** of its gates (14,500 → 3,457, mostly dead-gate elimination), since later layers cherry-pick the useful bits of the whole history. `--skip-input` remains the recommended configuration.
+
 Full run logs: see [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
 
 ## Quick start
@@ -136,7 +138,7 @@ python experiment.py --device cuda --gates 2000 --skip-input --max-layers 16 --s
 - [x] **Depth stress test**: done — backprop collapses to chance at ~12 layers while greedy keeps learning at 40 (see [above](#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12)). The open half of the question is making that depth *useful*: greedy accuracy still peaks early and decays.
 - [x] **Memory-matched comparison**: done — at equal training memory (4× wider layers), greedy outperforms end-to-end on all seeds tested, 95.0% vs 91.5% mean (see [above](#memory-matched-comparison-equal-training-memory-greedy-wins)).
 - [ ] MNIST / CIFAR-10 on GPU, on top of [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
-- [x] Skip connections: done — `--skip-input` removes most of the depth decay (layer 40: 56.0% → 83.6%) and moves the accuracy peak deeper (see [above](#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth)). Open refinement: also expose *all* earlier layers (DenseNet-style), not just the input.
+- [x] Skip connections: done — `--skip-input` removes most of the depth decay (layer 40: 56.0% → 83.6%) and moves the accuracy peak deeper (see [above](#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth)). The DenseNet-style refinement (`--skip-all`) was also tested: flattest depth curve, but no accuracy win — `--skip-input` stays the default recommendation.
 - [ ] Better local objectives: Forward-Forward goodness on binary vectors, [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses.
 - [ ] Simplify *between* growth steps (currently done once at the end) and rewire the next layer to the simplified circuit.
 - [ ] Export simplified circuits to Verilog / run through ABC for comparison with proper logic synthesis.
