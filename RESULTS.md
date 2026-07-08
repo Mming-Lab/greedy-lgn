@@ -335,7 +335,85 @@ Findings:
 4. **Honest positioning unchanged in kind, narrowed in degree**: the gap to
    difflogic-scale results (~97.7%) shrinks from ~13 pt to ~7 pt, still with far
    smaller budgets (≤4,000 gates/layer, 30 epochs, single machine). Remaining known
-   levers: 8,000-gate layers (VRAM-feasible with the new chunk budgeting), better
-   input binarization, and convolutional wiring.
+   levers: 8,000-gate layers (see below), better input binarization, and
+   convolutional wiring.
+5. **8,000 gates: OOM at 6 GB, but the partial result is telling.** Before crashing
+   while building layer 3, the 8,000-gate run reached **90.01% at depth 2** — above
+   the best completed single 4,000-gate net (89.77% at depth 7), so width is still
+   not saturated. The chunk budgeting fixed only the evaluation temporary; the real
+   constraint is the **persistent wiring pools** (`[60000, 10352]` float32 plus
+   transient copies during the skip-pool transition ≈ 7 GB). Fix candidates for a
+   follow-up: uint8 pools (hard bits are bits), CPU-resident pools with per-batch
+   transfer, or an in-place pool buffer.
 
 Full run log: [issue #9](https://github.com/Mming-Lab/greedy-lgn/issues/9).
+
+## Forward-Forward objective: popcount goodness — behind on digits, ahead on MNIST
+
+`--objective ff` swaps the per-layer local objective from GroupSum+CE to
+Forward-Forward goodness (Hinton, 2022), keeping everything else in the pipeline
+(train soft → discretize → freeze → adaptive depth → simplification with bit-exact
+verification). The LGN-native observation that motivated this: on binary layers,
+Hinton's goodness (sum of squared activations) degenerates to **popcount** — the
+"is this input real?" detector is a single adder tree, and the full inference
+procedure (overlay each of the 10 candidate labels, run the circuit, pick the label
+with the highest popcount) remains one pure logic circuit. Within a layer, training
+still uses gradients (as does the GroupSum objective); FF changes *what* the layer
+optimizes, not the per-layer optimizer.
+
+Mechanics: the one-hot label is concatenated onto the input bits (positive pass =
+true label, negative pass = a random wrong label, resampled each layer); the loss
+pushes positive goodness above θ = G/2 (the expected popcount at random init) and
+negative goodness below it, scaled by √G.
+
+**First honest failure: random 2-input wiring almost ignores 10 lone label bits.**
+With a plain 10-bit overlay, ~90% of layer-1 gates never touch a label bit, so
+positives and negatives look identical to most of the layer and FF barely beats
+chance (18% on the smoke config). Hinton's dense layers see the label everywhere;
+sparse random wiring does not. `--ff-label-rep K` replicates the label bits K times
+so the wiring pool actually samples them.
+
+digits, 500 gates/layer (GroupSum+CE reference: 88.4% mean over 3 seeds):
+
+| config | goodness test acc |
+|---|---|
+| rep 8 + skip-input | 78.0% |
+| rep 19 | 83.6% |
+| rep 19 + skip-input | 80.2% |
+| **rep 38 (seeds 1/2/3)** | **86.0 / 85.1 / 86.9 — mean 86.0%** |
+| rep 57 | 83.6% |
+| rep 76 | 82.2% |
+
+Findings:
+
+1. **FF lands 2.4 pt behind supervised local CE** (86.0% vs 88.4%, 3 seeds each) —
+   closer than the typical FF-vs-backprop gaps in the literature, and with a readout
+   that is nothing but a popcount comparison.
+2. **The label-replication curve peaks at label:data ≈ 2:1** (rep 38 = 380 label bits
+   vs 192 data bits) and falls off on both sides — under-replication starves gates of
+   label access, over-replication starves them of data.
+3. **`--skip-input` *hurts* FF** (83.6% → 80.2% at rep 19), the opposite of the
+   GroupSum result. Not fully understood; noted as an open question rather than
+   explained away.
+4. **Adaptive depth stops itself at 6** — allowing 16 layers changes nothing (86.0%
+   both ways). The Hinton-style normalization problem (later layers free-riding on
+   earlier layers' goodness) does not visibly runaway here, plausibly because hard
+   bits cap each gate's contribution at 1.
+5. Simplification and bit-exact verification carry over unchanged (the verification
+   input includes the overlaid label bits).
+6. **MNIST reverses the verdict** (500 gates, `--batch 4096 --epochs 30`, rep 470 ≈
+   the same 2:1 label:data ratio, seed 1): FF reaches **76.8% at depth 17** vs 74.3%
+   (depth 6) for GroupSum+CE at the same width — **+2.5 pt in favour of FF** on the
+   45× larger dataset, after losing by 2.4 pt on digits.
+7. **FF is the first lever that exploits depth without skip wiring.** The probe
+   climbs monotonically for 17 straight layers (35.4% → 76.8%) where no-skip GroupSum
+   greedy peaked at depth 6 on MNIST (depth 4 on digits) and decayed. A speculative
+   reading, stated as such: an FF layer's task — push positive popcount up, negative
+   down — composes across layers (each layer refines an already-separated density
+   code), whereas each GroupSum layer must re-encode class-count evidence from
+   scratch and loses information at every discretization.
+8. **Honest inference cost**: classification runs the circuit once per candidate
+   label (10×, parallelizable in hardware area), and the readout is a popcount
+   comparison instead of GroupSum count buckets.
+
+Full run log: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
