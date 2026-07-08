@@ -121,7 +121,8 @@ def train_window(win, pool0, X, y, cfg, tau, seed):
             opt.step()
 
 @torch.no_grad()
-def hard_batched(layer, x, chunk=8192):  # chunked to bound the [B, G, 16] temporary
+def hard_batched(layer, x, budget=8192 * 500):  # bound the [B, G, 16] temporary
+    chunk = max(1024, budget // layer.ia.numel())  # 500 gates -> 8192 rows (as before)
     return layer.hard(x) if len(x) <= chunk else torch.cat(
         [layer.hard(c) for c in x.split(chunk)])
 
