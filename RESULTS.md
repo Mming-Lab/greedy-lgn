@@ -415,5 +415,14 @@ Findings:
 8. **Honest inference cost**: classification runs the circuit once per candidate
    label (10×, parallelizable in hardware area), and the readout is a popcount
    comparison instead of GroupSum count buckets.
+9. **Windowed lookahead stacks with FF** (`--window 2 --commit 2`; the FF window
+   loss is always deep-supervised, since each committed layer's goodness is the
+   readout): digits 86.0% → **88.0%** mean over 3 seeds (+2.0 pt, all seeds up,
+   nearly closing the gap to plain GroupSum's 88.4%), MNIST 76.8% → **78.2%** at
+   depth 19 (+1.4 pt) — the best 500-gate single net on MNIST across all
+   objectives. The contrast with window × skip (which did *not* stack) carries a
+   mechanistic hint: FF's depth tolerance and lookahead fix different deficits,
+   whereas skip and lookahead compete for the same one. `W=1` remains bit-identical
+   to plain FF (regression-checked at 86.00%).
 
-Full run log: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
+Full run log and the window-combination follow-up: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
