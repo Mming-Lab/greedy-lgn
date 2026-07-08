@@ -161,6 +161,21 @@ python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --ga
 - [ ] Simplify *between* growth steps (currently done once at the end) and rewire the next layer to the simplified circuit.
 - [ ] Export simplified circuits to Verilog / run through ABC for comparison with proper logic synthesis.
 
+## What is new here — and what is not
+
+Being explicit about the boundary, because most ingredients of this repo are borrowed. The **single novel primitive** is:
+
+> *Train one logic layer with a local loss, discretize it immediately, freeze it, and train the next layer on the real 0/1 bits.*
+
+Everything this repo claims either derives from that primitive or is inherited from prior work:
+
+| property | status |
+|---|---|
+| No multipliers / DSPs / floats; maps to FPGA LUTs | **Inherited** from LGNs ([difflogic](https://github.com/Felix-Petersen/difflogic)) — not our contribution, just the platform. |
+| **Zero discretization gap** | **Direct consequence of the primitive.** Within the LGN literature we find no precedent (as of mid-2026) for a training procedure in which the gap is structurally zero rather than minimized after the fact. Precise claim: not "the first verified-equals-deployed network" (exact-by-construction routes exist outside LGNs, e.g. LogicNets' truth-table enumeration), but *an LGN that stays bit-exact throughout training*. |
+| Training memory = one layer, not depth | **Not unique** — any greedy layer-wise scheme (Cascade-Correlation, Forward-Forward) has this. What *is* unique is its intersection with bit-exactness: frozen layers could be burned to an FPGA and the next layer trained on the physical chip's outputs (**hardware-in-the-loop growth**). Backprop cannot do this (gradients don't cross silicon); continuous-activation local methods can't either (chip outputs ≠ training-time activations). Currently a possibility, not a demonstrated result. |
+| Adaptive depth / grow-and-freeze | **Cascade-Correlation heritage (1990)** — not new as an idea. Grounding it in circuits adds one genuinely new reading: since circuit depth = critical-path latency, stopping at the accuracy plateau automatically yields a *minimum-latency* circuit for that accuracy. Post-deployment growth (adding layers onto a frozen deployed circuit) is likewise possible in principle — but our own depth-stress data shows added depth only pays off with skip wiring, so we treat it as speculative. |
+
 ## Related work
 
 - [Deep Differentiable Logic Gate Networks](https://arxiv.org/abs/2210.08277) (Petersen et al., NeurIPS 2022) and [difflogic](https://github.com/Felix-Petersen/difflogic)
@@ -189,3 +204,5 @@ MIT
 skip connections(`--skip-input`: 各層の配線候補に元の入力192ビットを常に含める。ゲート数は増えず配線のみ)では、深さによる劣化がほぼ解消しました(40層目: 56.0%→83.6%)。ピークも88.2%(深さ4)から90.4%(深さ8)に上がり、**初めて「深さが精度に貢献する」結果**が出ています。幅4倍と組み合わせると3シード平均**95.7%**で、本リポジトリの現時点の最良値です。
 
 MNIST(`--dataset mnist`、ミニバッチ学習`--batch`を追加実装)でも同じ構図が再現しました: メモリ等価でgreedy+skipがe2eに+4.5pt勝ち(84.6% vs 80.1%)、深さ9自動選択、簡略化で73%削減。ただし絶対値はdifflogic系の公表値(約97.7%、ゲート数は20倍以上)に遠く及ばない小予算の第一歩で、幅の拡大・二値化の改善が次の課題です。GPU推奨(RTX 3060で約13分、CPUだと数時間)。
+
+新規性の境界について: 本リポジトリで唯一新しいのは「**各層を学習→即離散化→凍結し、次層を本物のビット上で学習する**」という一点です。離散化ギャップゼロはその直接の帰結(LGN文献に前例が見当たらない)、ハードウェア・イン・ザ・ループ学習と成長構造はその派生(未実証の可能性)、メモリ効率と適応深さはCascade-Correlation / Forward-Forward由来の借り物です。詳細は英語本文の「What is new here — and what is not」を参照してください。
