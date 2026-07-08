@@ -52,6 +52,8 @@ input bits ──► [train layer 1 (soft, local GroupSum loss)]
 
 ¹ With a smaller/undertrained config (`--gates 200 --epochs 30`), the end-to-end baseline shows a **+8.2 pt discretization gap** while greedy remains at exactly 0. At convergence on this easy dataset the gap closes; literature reports it re-appearing at larger depth/scale.
 
+Full run log: see [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1)
+
 **The takeaway is mixed, and that's the point.** Local training currently loses ~5 pt of accuracy to backprop — consistent with the Forward-Forward literature. In exchange you get zero discretization gap, ~1/depth training memory, automatic depth, and a circuit you can simplify incrementally. Whether that trade is worth it is exactly what the roadmap below is for.
 
 Also observed: **duplicate-gate merging found 0 duplicates** — with fixed random wiring, two gates almost never share both inputs. The real simplification wins are pass-through and dead-gate removal (34% of gates here). If you came for De Morgan-style rewriting, this is the empirical answer.
