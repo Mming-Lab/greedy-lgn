@@ -237,3 +237,64 @@ artifact: within each 2-layer block the first layer's probe is consistently weak
 optimizes most directly, and depth selection lands on even depths accordingly.
 
 Full run log: [issue #7](https://github.com/Mming-Lab/greedy-lgn/issues/7).
+
+## Ensemble voting: parallel circuits are the training-memory-free width lever
+
+Hardware framing first: replicating a logic circuit M× costs area and power but **no
+latency** (members evaluate in parallel), and a majority vote is itself a small Boolean
+circuit — so an ensemble of hard networks plus its vote is still one pure logic
+circuit, and each member's bit-exactness is verified independently by the
+simplification pass.
+
+`--ensemble M` trains M independent greedy networks that differ only in seed
+(`seed .. seed+M-1`, which also randomizes each member's wiring) and reports two vote
+rules:
+
+- **soft vote**: sum the members' GroupSum counts, then argmax. Mathematically this
+  equals concatenating the members' final layers into a single M×-wide GroupSum
+  readout — i.e. the ensemble is a *block-diagonally wired* wide network.
+- **majority vote**: per-member argmax, then plurality; ties broken by the summed
+  counts (the tie-break is scaled so it can never overturn a vote lead).
+
+Digits, seeds 1–4 (members 1–3 reproduce the known single-run numbers exactly):
+
+| config | member mean | soft vote | majority vote |
+|---|---|---|---|
+| 500 gates, plain ×4 | 87.7% | 91.3% | 90.2% |
+| 500 gates, plain ×8 | 87.6% | 91.8% | 91.6% |
+| 500 gates, W=2 blocks ×4 | 89.9% | 92.2% | **92.4%** |
+| 2,000 gates + skip ×4 | 95.5% | 96.2% | **96.4% — repo best** |
+
+MNIST (500 gates/layer, `--batch 4096 --epochs 30`, seeds 1–4):
+
+| config | member mean | soft vote | majority vote |
+|---|---|---|---|
+| plain ×4 | 74.5% | **82.9%** | 81.9% |
+| W=2 blocks ×4 | 77.3% | **84.7%** | 83.9% |
+
+Findings:
+
+1. **Voting stacks with everything tried so far** — with windowed lookahead (92.4% on
+   digits, beating the e2e 3-seed mean of 91.5% for the first time at 500 gates) and
+   with skip+width (96.4%, new repo best). Contrast with window × skip, which did not
+   stack: error decorrelation fixes a different failure mode than myopia or
+   information starvation.
+2. **The MNIST gain is much larger than the digits gain** (+8.4 pt vs +3.6 pt at 500
+   gates): harder task, more room for members to disagree.
+3. **New MNIST headline**: 4 × (500 gates, W=2 blocks) reaches **84.7%**, edging out
+   the previous repo best of 84.6% (single 2,000-gate + skip) while holding **half the
+   training memory** (2×500×16 = 16,000 float logits for the soft window vs 32,000)
+   and fewer raw inference gates (13,000 vs 18,000). Members can also be trained in
+   parallel on separate devices — greedy inside a member, embarrassingly parallel
+   across members.
+4. **Honest limit: ensembling is not a substitute for direct width.** At comparable
+   inference area on digits, one 2,000-wide network (8,000 raw gates, 95.0% mean)
+   clearly beats 4×500 members (5,500 raw gates, 91.3%). Joint training within a wide
+   layer buys more than decorrelation across narrow ones. The ensemble's niche is
+   converting inference area into accuracy **without touching training memory** — the
+   exact lever the VRAM-bound MNIST scaling plan needs.
+5. **Vote-rule crossover**: soft vote wins for weak members (it averages away
+   overconfident mistakes), majority vote wins for strong members (one member's
+   overconfident error can poison the summed counts but costs only one vote).
+
+Full run log: [issue #8](https://github.com/Mming-Lab/greedy-lgn/issues/8).

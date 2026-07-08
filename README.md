@@ -59,9 +59,10 @@ input bits ──► [train layer 1 (soft, local GroupSum loss)]
 |---|---|---|
 | Depth stress test | e2e collapses to chance at ~12 layers (vanishing gradients); greedy still learns at layer 40 | [→](RESULTS.md#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12) |
 | Memory-matched width | at equal training memory (4× wider layers), greedy **beats** e2e: 95.0% vs 91.5% mean, 3 seeds | [→](RESULTS.md#memory-matched-comparison-equal-training-memory-greedy-wins) |
-| Skip connections (`--skip-input`) | depth finally pays: peak 88.2%@4 → 90.4%@8; with 4× width **95.7% mean — repo best**. DenseNet-style `--skip-all` tested, negative | [→](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth) |
+| Skip connections (`--skip-input`) | depth finally pays: peak 88.2%@4 → 90.4%@8; with 4× width 95.7% mean. DenseNet-style `--skip-all` tested, negative | [→](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth) |
 | MNIST first pass | the pattern replicates at 45× the data: memory-matched greedy+skip 84.6% vs e2e 80.1% (absolute numbers far below difflogic-scale budgets, stated honestly) | [→](RESULTS.md#mnist-the-pattern-replicates-first-pass-small-budget) |
 | Windowed lookahead (`--window`) | training 2 layers ahead closes ~⅔ of the myopia gap: 90.4% vs e2e's 91.5% (3 seeds), +2.4 pt on MNIST; overlap/receding-horizon variant loses to plain blocks | [→](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap) |
+| Ensemble voting (`--ensemble`) | parallel hard circuits + vote: stacks with everything (digits **96.4% — repo best**); on MNIST 4×500-gate members beat the single 2,000-gate best (84.7% vs 84.6%) at **half the training memory**; not a substitute for direct width | [→](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever) |
 
 Full run logs (environment, commands, raw output): **one GitHub issue per experiment** ([#1](https://github.com/Mming-Lab/greedy-lgn/issues/1) main run … [#7](https://github.com/Mming-Lab/greedy-lgn/issues/7) windowed lookahead), linked from each [RESULTS.md](RESULTS.md) section.
 
@@ -74,7 +75,8 @@ python experiment.py --gates 200 --epochs 30 --max-layers 3   # ~20 s smoke test
 python experiment.py --skip-e2e                           # greedy + simplification only
 python experiment.py --device cuda                        # same experiment on GPU (~10x faster)
 python experiment.py --window 2 --commit 2 --win-loss all # 2-layer lookahead blocks (+2 pt)
-python experiment.py --device cuda --gates 2000 --skip-input --max-layers 16 --skip-e2e   # best config (95.7% mean)
+python experiment.py --ensemble 4 --skip-e2e              # 4 independent nets + voting
+python experiment.py --device cuda --gates 2000 --skip-input --max-layers 16 --skip-e2e --ensemble 4   # best config (96.4%)
 python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --gates 2000 --skip-input --max-layers 10 --skip-e2e   # MNIST (GPU recommended)
 ```
 
@@ -85,7 +87,8 @@ python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --ga
 - [x] **Skip connections** — `--skip-input` makes depth useful; `--skip-all` negative ([details](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth)).
 - [x] **MNIST first pass** — pattern replicates; absolute accuracy still small-budget ([details](RESULTS.md#mnist-the-pattern-replicates-first-pass-small-budget)).
 - [x] **Windowed lookahead** — `--window 2` recovers most of the myopia deficit; window > 2 and overlapping commits don't help ([details](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap)).
-- [ ] MNIST absolute accuracy: wider layers (4,000–8,000 gates), more epochs, better input binarization.
+- [x] **Ensemble voting** — `--ensemble M` stacks with every other lever; repo best on digits (96.4%) and the training-memory-free path to MNIST scaling ([details](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever)).
+- [ ] MNIST absolute accuracy: wider layers (4,000–8,000 gates) × ensembles, more epochs, better input binarization.
 - [ ] CIFAR-10 / larger widths, on top of [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
 - [ ] Better local objectives: Forward-Forward goodness on binary vectors, [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses.
 - [ ] Simplify *between* growth steps (currently done once at the end) and rewire the next layer to the simplified circuit.
@@ -127,7 +130,7 @@ MIT
 
 論理ゲートネットワーク(DLGN)を**逆伝播なしで1層ずつ**学習する実証実験です。各層をローカルな損失(GroupSum+交差エントロピー)で学習したら**即座に離散化して凍結**し、次の層は本物の0/1ビットの上で学習します。検証精度が頭打ちになったら層の追加を止めるため、深さは自動決定されます。学習後に回路を簡略化し、出力が完全に同一であることをビット単位で検証します。
 
-結果は正直に言って一長一短です: 素のgreedyはend-to-end逆伝播に約5pt負けますが(88.2% vs 93.6%)、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定という利点があります。その5ptの内訳を潰していくのが各実験です — **メモリ等価**(幅4倍でe2eと同じfloat予算)ではgreedyが3シード全勝(95.0% vs 91.5%)、**skip connections**(`--skip-input`)で初めて深さが精度に貢献し幅4倍併用で平均**95.7%**(自己ベスト)、**MNIST**でも同じ構図が再現(84.6% vs 80.1%)、**先読み窓**(`--window 2`: 2層先まで逆伝播で共同学習してからまとめて離散化)で近視由来のギャップの約2/3を回収(90.4% vs 91.5%)。逆伝播は12層でチャンスレベルに崩壊する一方、greedyは40層目でも学習が成立します。
+結果は正直に言って一長一短です: 素のgreedyはend-to-end逆伝播に約5pt負けますが(88.2% vs 93.6%)、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定という利点があります。その5ptの内訳を潰していくのが各実験です — **メモリ等価**(幅4倍でe2eと同じfloat予算)ではgreedyが3シード全勝(95.0% vs 91.5%)、**skip connections**(`--skip-input`)で初めて深さが精度に貢献、**MNIST**でも同じ構図が再現(84.6% vs 80.1%)、**先読み窓**(`--window 2`: 2層先まで逆伝播で共同学習してからまとめて離散化)で近視由来のギャップの約2/3を回収(90.4% vs 91.5%)、**アンサンブル投票**(`--ensemble M`: 独立学習した離散回路を横に並べて投票 — 並列評価なのでレイテンシ不変、投票回路込みで純粋な論理回路のまま)は他の全レバーと加算され、digitsで**96.4%**(自己ベスト)、MNISTでは4×500ゲートが単発2,000ゲートの従来ベストを半分の学習メモリで上回ります(84.7% vs 84.6%)。逆伝播は12層でチャンスレベルに崩壊する一方、greedyは40層目でも学習が成立します。
 
 各実験のセットアップ・数値表・**反証された仮説**(オーバーラップコミットはブロック式に勝てない、skipはパススルーを減らさない、DenseNet式は僅かに劣る、など)は [RESULTS.md](RESULTS.md) に、生ログは実験ごとの個別issue(#1〜#7、RESULTS.mdの各セクションからリンク)にあります。
 
