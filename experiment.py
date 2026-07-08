@@ -7,6 +7,7 @@ Runs on CPU in a few minutes. Requirements: torch, scikit-learn.
 Usage:
     python experiment.py                     # default config (a few minutes on CPU)
     python experiment.py --gates 200 --epochs 30 --max-layers 3   # quick smoke test
+    python experiment.py --device cuda       # same experiment on GPU
 """
 import argparse, json, time
 import numpy as np
@@ -41,8 +42,8 @@ class LogicLayer(nn.Module):
     def __init__(self, in_dim, n_gates, seed):
         super().__init__()
         g = torch.Generator().manual_seed(seed)
-        self.ia = torch.randint(0, in_dim, (n_gates,), generator=g)
-        self.ib = torch.randint(0, in_dim, (n_gates,), generator=g)
+        self.register_buffer("ia", torch.randint(0, in_dim, (n_gates,), generator=g))
+        self.register_buffer("ib", torch.randint(0, in_dim, (n_gates,), generator=g))
         self.logits = nn.Parameter(torch.randn(n_gates, 16, generator=g))
     def forward(self, x):  # soft (training) mode
         return (all16(x[:, self.ia], x[:, self.ib])
@@ -84,7 +85,7 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
     best_acc, best_depth, since_best = -1.0, 0, 0
     t0 = time.time()
     for d in range(1, cfg.max_layers + 1):
-        L = LogicLayer(h_tr.shape[1], cfg.gates, seed=cfg.seed * 100 + d)
+        L = LogicLayer(h_tr.shape[1], cfg.gates, seed=cfg.seed * 100 + d).to(cfg.device)
         train_layer(L, h_tr, ytr, cfg.epochs, cfg.n_class, tau, cfg.lr)
         h_tr, h_te = L.hard(h_tr), L.hard(h_te)   # freeze on HARD bits
         a_te = accuracy(group_sum(h_te, cfg.n_class, tau), yte)
@@ -108,7 +109,7 @@ def run_e2e(Xtr, Xte, ytr, yte, depth, cfg):
     tau = float(np.sqrt(cfg.gates / cfg.n_class))
     net = nn.ModuleList([LogicLayer(Xtr.shape[1] if i == 0 else cfg.gates,
                                     cfg.gates, seed=cfg.seed * 200 + i)
-                         for i in range(depth)])
+                         for i in range(depth)]).to(cfg.device)
     opt = torch.optim.Adam([p for L in net for p in L.parameters()], lr=cfg.lr)
     epochs = min(cfg.epochs * depth, cfg.e2e_max_epochs)
     t0 = time.time()
@@ -258,18 +259,23 @@ def main():
     p.add_argument("--e2e-max-epochs", type=int, default=300)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--skip-e2e", action="store_true", help="skip the backprop baseline")
+    p.add_argument("--device", default="cpu", help="cpu or cuda")
+    p.add_argument("--e2e-depth", type=int, default=None,
+                   help="override e2e baseline depth (default: greedy's chosen depth)")
     cfg = p.parse_args()
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
-    Xtr, Xte, ytr, yte = load_data()
-    print(f"data: {Xtr.shape[0]} train / {Xte.shape[0]} test, {Xtr.shape[1]} input bits\n")
+    Xtr, Xte, ytr, yte = [t.to(cfg.device) for t in load_data()]
+    print(f"data: {Xtr.shape[0]} train / {Xte.shape[0]} test, {Xtr.shape[1]} input bits"
+          f"  (device={cfg.device})\n")
 
     layers, greedy_acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
     e2e_soft = e2e_hard = None
     if not cfg.skip_e2e:
-        e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte, depth, cfg)
-    before, after = simplify(layers, Xte, yte, cfg)
+        e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte, cfg.e2e_depth or depth, cfg)
+    # simplification is pure-Python graph rewriting -> always run on CPU
+    before, after = simplify([L.cpu() for L in layers], Xte.cpu(), yte.cpu(), cfg)
 
     summary = {"greedy_hard_test_acc": round(greedy_acc, 4),
                "greedy_depth": depth,
