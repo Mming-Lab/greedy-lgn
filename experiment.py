@@ -9,6 +9,7 @@ Usage:
     python experiment.py --gates 200 --epochs 30 --max-layers 3   # quick smoke test
     python experiment.py --device cuda       # same experiment on GPU
     python experiment.py --skip-input        # re-expose input bits to every layer
+    python experiment.py --skip-all          # DenseNet-style: all previous layers
 """
 import argparse, json, time
 import numpy as np
@@ -81,7 +82,8 @@ def train_layer(layer, Xin, yin, epochs, n_class, tau, lr):
 # ----------------------------- (A) greedy layer-wise -----------------------------
 def run_greedy(Xtr, Xte, ytr, yte, cfg):
     print("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
-          + (" [skip-input wiring]" if cfg.skip_input else ""))
+          + (" [skip-all wiring]" if cfg.skip_all else
+             " [skip-input wiring]" if cfg.skip_input else ""))
     tau = float(np.sqrt(cfg.gates / cfg.n_class))
     layers, pool_tr, pool_te = [], Xtr, Xte
     best_acc, best_depth, since_best = -1.0, 0, 0
@@ -94,8 +96,10 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
         a_tr = accuracy(group_sum(h_tr, cfg.n_class, tau), ytr)
         print(f"  layer {d}: hard probe  train={a_tr:.4f}  test={a_te:.4f}")
         layers.append(L)
-        # next layer's wiring pool: gate outputs, optionally with input bits re-exposed
-        if cfg.skip_input:
+        # next layer's wiring pool: gate outputs, optionally with earlier bits re-exposed
+        if cfg.skip_all:      # DenseNet-style: input + every previous layer
+            pool_tr, pool_te = torch.cat([pool_tr, h_tr], 1), torch.cat([pool_te, h_te], 1)
+        elif cfg.skip_input:  # input + previous layer only
             pool_tr, pool_te = torch.cat([Xtr, h_tr], 1), torch.cat([Xte, h_te], 1)
         else:
             pool_tr, pool_te = h_tr, h_te
@@ -150,11 +154,14 @@ def simplify(layers, Xte, yte, cfg):
     tau = float(np.sqrt(G / cfg.n_class))
     net, base = [], in_bits
     skip = getattr(cfg, "skip_input", False)
+    dense = getattr(cfg, "skip_all", False)
     for li, L in enumerate(layers):
         prev = base - G  # global id of the previous layer's first gate (li > 0)
         def src(j, li=li, prev=prev):
             if li == 0:
                 return j                                  # wired to input bits
+            if dense:                                     # pool = [input || all layers]:
+                return j                                  #   pool order == global id order
             if skip:                                      # pool = [input || prev layer]
                 return j if j < in_bits else prev + (j - in_bits)
             return prev + j                               # pool = prev layer only
@@ -279,6 +286,9 @@ def main():
     p.add_argument("--skip-input", action="store_true",
                    help="concatenate the input bits into every greedy layer's wiring"
                         " pool (skip connections; e2e baseline is unaffected)")
+    p.add_argument("--skip-all", action="store_true",
+                   help="DenseNet-style: wiring pool = input bits + ALL previous"
+                        " layers' outputs (overrides --skip-input)")
     cfg = p.parse_args()
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
