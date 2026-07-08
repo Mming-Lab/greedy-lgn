@@ -3,7 +3,8 @@
 Full write-ups of every experiment in this repo. The [README](README.md) carries the
 headline numbers; this file carries the setups, tables, caveats, and the hypotheses
 that did *not* survive contact with the data. Full run logs (environment, commands,
-raw output) are in [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
+raw output) live in **one GitHub issue per experiment**, linked at the end of each
+section below.
 
 All experiments: `sklearn` digits (8×8, thermometer-binarized to 192 bits) unless
 stated otherwise, 500 gates/layer, seed 1 unless a seed list is given. GPU runs on an
@@ -34,6 +35,8 @@ Also observed: **duplicate-gate merging found 0 duplicates** — with fixed rand
 wiring, two gates almost never share both inputs. The real simplification wins are
 pass-through and dead-gate removal (34% of gates here). If you came for De Morgan-style
 rewriting, this is the empirical answer.
+
+Full run log: [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
 
 ## Depth stress test: greedy survives 40 layers, backprop dies at ~12
 
@@ -66,6 +69,8 @@ Three observations, stated honestly:
    (no skip connections in this run). This experiment supports "greedy can train at any
    depth", not "deeper greedy networks are better".
 
+Full run log: [issue #2](https://github.com/Mming-Lab/greedy-lgn/issues/2).
+
 ## Memory-matched comparison: equal training memory, greedy wins
 
 Greedy's training-memory advantage (only one layer is ever soft) can be spent on width
@@ -89,6 +94,8 @@ during training as the 4-layer end-to-end baseline:
   runs only in the greedy pipeline, so the e2e count is unsimplified.)
 - Same toy-scale caveats as everywhere in this file: one easy dataset, 450 test
   samples, 3 seeds.
+
+Full run log: [issue #3](https://github.com/Mming-Lab/greedy-lgn/issues/3).
 
 ## Skip connections: re-exposing the input turns survivable depth into usable depth
 
@@ -134,6 +141,10 @@ to **23.8%** of its gates (14,500 → 3,457, mostly dead-gate elimination), sinc
 layers cherry-pick the useful bits of the whole history. `--skip-input` remains the
 recommended configuration.
 
+Full run logs: [issue #4](https://github.com/Mming-Lab/greedy-lgn/issues/4)
+(`--skip-input`), [issue #5](https://github.com/Mming-Lab/greedy-lgn/issues/5)
+(`--skip-all`).
+
 ## MNIST: the pattern replicates (first pass, small budget)
 
 Ported via `--dataset mnist` (28×28 → 3-threshold thermometer → 2,352 bits, standard
@@ -158,6 +169,8 @@ Ported via `--dataset mnist` (28×28 → 3-threshold thermometer → 2,352 bits,
   input binarization — is future work.
 - Runtime: ~13 min for the 2,000-gate greedy run on an RTX 3060 Laptop. CPU would take
   hours; `digits` remains the CPU-friendly configuration.
+
+Full run log: [issue #6](https://github.com/Mming-Lab/greedy-lgn/issues/6).
 
 ## Windowed lookahead: training two layers ahead closes most of the myopia gap
 
@@ -222,3 +235,5 @@ Findings, honest parts first:
 artifact: within each 2-layer block the first layer's probe is consistently weaker
 (sawtooth curve) — the block's second layer is the one whose readout the window loss
 optimizes most directly, and depth selection lands on even depths accordingly.
+
+Full run log: [issue #7](https://github.com/Mming-Lab/greedy-lgn/issues/7).

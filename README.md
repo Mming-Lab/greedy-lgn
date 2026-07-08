@@ -63,7 +63,7 @@ input bits ──► [train layer 1 (soft, local GroupSum loss)]
 | MNIST first pass | the pattern replicates at 45× the data: memory-matched greedy+skip 84.6% vs e2e 80.1% (absolute numbers far below difflogic-scale budgets, stated honestly) | [→](RESULTS.md#mnist-the-pattern-replicates-first-pass-small-budget) |
 | Windowed lookahead (`--window`) | training 2 layers ahead closes ~⅔ of the myopia gap: 90.4% vs e2e's 91.5% (3 seeds), +2.4 pt on MNIST; overlap/receding-horizon variant loses to plain blocks | [→](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap) |
 
-Full run logs (environment, commands, raw output): [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
+Full run logs (environment, commands, raw output): **one GitHub issue per experiment** ([#1](https://github.com/Mming-Lab/greedy-lgn/issues/1) main run … [#7](https://github.com/Mming-Lab/greedy-lgn/issues/7) windowed lookahead), linked from each [RESULTS.md](RESULTS.md) section.
 
 ## Quick start
 
@@ -129,6 +129,6 @@ MIT
 
 結果は正直に言って一長一短です: 素のgreedyはend-to-end逆伝播に約5pt負けますが(88.2% vs 93.6%)、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定という利点があります。その5ptの内訳を潰していくのが各実験です — **メモリ等価**(幅4倍でe2eと同じfloat予算)ではgreedyが3シード全勝(95.0% vs 91.5%)、**skip connections**(`--skip-input`)で初めて深さが精度に貢献し幅4倍併用で平均**95.7%**(自己ベスト)、**MNIST**でも同じ構図が再現(84.6% vs 80.1%)、**先読み窓**(`--window 2`: 2層先まで逆伝播で共同学習してからまとめて離散化)で近視由来のギャップの約2/3を回収(90.4% vs 91.5%)。逆伝播は12層でチャンスレベルに崩壊する一方、greedyは40層目でも学習が成立します。
 
-各実験のセットアップ・数値表・**反証された仮説**(オーバーラップコミットはブロック式に勝てない、skipはパススルーを減らさない、DenseNet式は僅かに劣る、など)は [RESULTS.md](RESULTS.md) に、生ログは [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1) にあります。
+各実験のセットアップ・数値表・**反証された仮説**(オーバーラップコミットはブロック式に勝てない、skipはパススルーを減らさない、DenseNet式は僅かに劣る、など)は [RESULTS.md](RESULTS.md) に、生ログは実験ごとの個別issue(#1〜#7、RESULTS.mdの各セクションからリンク)にあります。
 
 新規性の境界: 本リポジトリで唯一新しいのは「**各層を学習→即離散化→凍結し、次層を本物のビット上で学習する**」という一点です。離散化ギャップゼロはその直接の帰結、ハードウェア・イン・ザ・ループ成長はその派生(未実証)、メモリ効率と適応深さはCascade-Correlation / Forward-Forward由来の借り物です。詳細は「What is new here — and what is not」を参照してください。
