@@ -12,6 +12,7 @@ Usage:
     python experiment.py --skip-all          # DenseNet-style: all previous layers
     python experiment.py --window 4 --commit 1   # receding horizon: look 4 ahead, commit 1
     python experiment.py --ensemble 4            # 4 independent nets + voting
+    python experiment.py --objective ff          # Forward-Forward local objective
     python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30   # MNIST
 """
 import argparse, json, time
@@ -209,6 +210,87 @@ def run_ensemble(Xtr, Xte, ytr, yte, cfg):
     print(f"  soft vote (summed GroupSum counts) = {soft_acc:.4f}")
     print(f"  majority vote (count tie-break)    = {maj_acc:.4f}\n")
     return members, member_acc, depths, soft_acc, maj_acc
+
+# ----------------------------- (A') Forward-Forward objective -----------------------------
+def ff_inputs(X, y, n_class, rep=1):
+    """FF流にラベルを入力へ重畳: one-hot 10ビットをrep回複製して連結する。
+    ランダム2入力配線では、ラベルビットがプールの一定割合を占めないと
+    ほとんどのゲートがラベルを見ない(rep=1だと約10%しか触れない)"""
+    return torch.cat([X, F.one_hot(y, n_class).float().repeat(1, rep)], 1)
+
+def ff_pool(layers, X, cfg):
+    """凍結プレフィックスをhardで通し、次に学習する層の配線プールを返す"""
+    pool = X
+    for L in layers:
+        h = hard_batched(L, pool)
+        pool = next_pool(h, X, pool, cfg)
+    return pool
+
+@torch.no_grad()
+def ff_accuracy(layers, X, y, cfg):
+    """10ラベルを順に試し、最終層のgoodness(バイナリ層ではpopcount)が
+    最大になるラベルを予測とする(FFの標準的な推論手続き)"""
+    good = []
+    for c in range(cfg.n_class):
+        Xc = ff_inputs(X, torch.full_like(y, c), cfg.n_class, cfg.ff_label_rep)
+        good.append(hard_forward(layers, Xc, cfg).sum(1))
+    return (torch.stack(good, 1).argmax(1) == y).float().mean().item()
+
+def train_layer_ff(layer, pool_p, pool_n, theta, tau, cfg, seed):
+    """FFローカル損失: 正例(正しいラベル重畳)のgoodnessを閾値θより上へ、
+    負例(誤りラベル重畳)を下へ押すロジスティック損失。θ=G/2はランダム初期化時の
+    期待goodness(ゲート出力の平均≈0.5)に一致する"""
+    opt = torch.optim.Adam(layer.parameters(), lr=cfg.lr)
+    def loss(bp, bn):
+        return (F.softplus(-(layer(bp).sum(1) - theta) / tau).mean()
+                + F.softplus((layer(bn).sum(1) - theta) / tau).mean())
+    if not cfg.batch or cfg.batch >= len(pool_p):   # full-batch (default)
+        for _ in range(cfg.epochs):
+            opt.zero_grad()
+            loss(pool_p, pool_n).backward()
+            opt.step()
+        return
+    g = torch.Generator().manual_seed(seed)
+    for _ in range(cfg.epochs):
+        for idx in torch.randperm(len(pool_p), generator=g).split(cfg.batch):
+            idx = idx.to(pool_p.device)
+            opt.zero_grad()
+            loss(pool_p[idx], pool_n[idx]).backward()
+            opt.step()
+
+def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
+    """greedyパイプラインはそのまま(学習→即離散化→凍結)、ローカル目的だけ
+    GroupSum+CEからFF goodnessに置き換えた版。ラベルは入力に重畳するので
+    層にreadoutは無い。負例ラベルは層ごとに引き直す(正解を必ず避ける)"""
+    print("=== (A') Greedy layer-wise, Forward-Forward objective ==="
+          + (" [skip-all wiring]" if cfg.skip_all else
+             " [skip-input wiring]" if cfg.skip_input else ""))
+    G = cfg.gates
+    theta, tau = G / 2, float(np.sqrt(G))
+    gneg = torch.Generator().manual_seed(cfg.seed * 31)
+    Xp = ff_inputs(Xtr, ytr, cfg.n_class, cfg.ff_label_rep)
+    layers, best_acc, best_depth, since_best = [], -1.0, 0, 0
+    t0 = time.time()
+    for d in range(1, cfg.max_layers + 1):
+        off = torch.randint(1, cfg.n_class, (len(ytr),), generator=gneg).to(ytr.device)
+        Xn = ff_inputs(Xtr, (ytr + off) % cfg.n_class, cfg.n_class, cfg.ff_label_rep)
+        pool_p, pool_n = ff_pool(layers, Xp, cfg), ff_pool(layers, Xn, cfg)
+        L = LogicLayer(pool_p.shape[1], G, seed=cfg.seed * 100 + d).to(cfg.device)
+        train_layer_ff(L, pool_p, pool_n, theta, tau, cfg, cfg.seed * 1000 + d)
+        layers.append(L)
+        a_tr = ff_accuracy(layers, Xtr, ytr, cfg)
+        a_te = ff_accuracy(layers, Xte, yte, cfg)
+        print(f"  layer {d}: goodness probe  train={a_tr:.4f}  test={a_te:.4f}")
+        if a_te > best_acc + 1e-4:
+            best_acc, best_depth, since_best = a_te, d, 0
+        else:
+            since_best += 1
+            if since_best >= cfg.patience:
+                print(f"  -> stop: no improvement for {cfg.patience} layers")
+                break
+    print(f"  greedy-FF: best goodness test acc = {best_acc:.4f} at depth {best_depth}"
+          f"  ({time.time() - t0:.0f}s)\n")
+    return layers[:best_depth], best_acc, best_depth
 
 # ----------------------------- (B) end-to-end baseline -----------------------------
 def run_e2e(Xtr, Xte, ytr, yte, depth, cfg):
@@ -411,6 +493,14 @@ def main():
                    help="window training loss: CE at the last window layer only"
                         " (pure lookahead) or averaged over all window layers"
                         " (deep supervision)")
+    p.add_argument("--objective", choices=["groupsum", "ff"], default="groupsum",
+                   help="per-layer local objective: groupsum (GroupSum+CE, original)"
+                        " or ff (Forward-Forward goodness = popcount on binary"
+                        " layers; labels are overlaid on the input, inference tries"
+                        " all 10 labels)")
+    p.add_argument("--ff-label-rep", type=int, default=1,
+                   help="replicate the 10 overlaid label bits this many times so"
+                        " random wiring actually samples them (ff objective only)")
     p.add_argument("--ensemble", type=int, default=1,
                    help="train ENSEMBLE independent greedy networks (seeds seed.."
                         "seed+M-1) side by side and report soft-vote / majority-vote"
@@ -424,6 +514,8 @@ def main():
     cfg = p.parse_args()
     if not (1 <= cfg.commit <= cfg.window):
         p.error("--commit must satisfy 1 <= commit <= window")
+    if cfg.objective == "ff" and (cfg.window > 1 or cfg.ensemble > 1):
+        p.error("--objective ff does not support --window/--ensemble yet")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
@@ -455,14 +547,22 @@ def main():
         print(json.dumps(summary, indent=2))
         return
 
-    layers, greedy_acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
+    if cfg.objective == "ff":
+        layers, greedy_acc, depth = run_greedy_ff(Xtr, Xte, ytr, yte, cfg)
+    else:
+        layers, greedy_acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
     e2e_soft = e2e_hard = None
     if not cfg.skip_e2e:
         e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte, cfg.e2e_depth or depth, cfg)
     # simplification is pure-Python graph rewriting -> always run on CPU
-    before, after = simplify([L.cpu() for L in layers], Xte.cpu(), yte.cpu(), cfg)
+    # (FF: 入力はラベル重畳込み。表示されるaccはGroupSum読み出しなのでFFの
+    #  精度ではないが、ビット等価性の検証(identical)はそのまま有効)
+    Xte_s = (ff_inputs(Xte, yte, cfg.n_class, cfg.ff_label_rep)
+             if cfg.objective == "ff" else Xte)
+    before, after = simplify([L.cpu() for L in layers], Xte_s.cpu(), yte.cpu(), cfg)
 
-    summary = {"greedy_hard_test_acc": round(greedy_acc, 4),
+    summary = {"objective": cfg.objective,
+               "greedy_hard_test_acc": round(greedy_acc, 4),
                "greedy_depth": depth,
                "e2e_soft_test_acc": e2e_soft and round(e2e_soft, 4),
                "e2e_hard_test_acc": e2e_hard and round(e2e_hard, 4),
