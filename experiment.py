@@ -236,18 +236,26 @@ def ff_accuracy(layers, X, y, cfg):
         good.append(hard_forward(layers, Xc, cfg).sum(1))
     return (torch.stack(good, 1).argmax(1) == y).float().mean().item()
 
-def train_layer_ff(layer, pool_p, pool_n, theta, tau, cfg, seed):
-    """FFローカル損失: 正例(正しいラベル重畳)のgoodnessを閾値θより上へ、
-    負例(誤りラベル重畳)を下へ押すロジスティック損失。θ=G/2はランダム初期化時の
-    期待goodness(ゲート出力の平均≈0.5)に一致する"""
-    opt = torch.optim.Adam(layer.parameters(), lr=cfg.lr)
-    def loss(bp, bn):
-        return (F.softplus(-(layer(bp).sum(1) - theta) / tau).mean()
-                + F.softplus((layer(bn).sum(1) - theta) / tau).mean())
+def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed):
+    """FFローカル損失で窓内W層をsoftのまま共同学習: 正例(正しいラベル重畳)の
+    goodnessを閾値θより上へ、負例(誤りラベル重畳)を下へ押すロジスティック損失。
+    θ=G/2はランダム初期化時の期待goodness(ゲート出力の平均≈0.5)に一致する。
+    窓損失は常に全層平均(deep supervision) — コミット層のgoodnessが深さ選択の
+    プローブかつ推論のreadoutなので、groupsumの--win-loss last相当は成立しない。
+    W=1で従来のFF 1層学習と厳密に一致する"""
+    opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
+    def loss(bp, bn, xp, xn):
+        terms = []
+        for L in win:
+            hp, hn = L(bp), L(bn)
+            terms.append(F.softplus(-(hp.sum(1) - theta) / tau).mean()
+                         + F.softplus((hn.sum(1) - theta) / tau).mean())
+            bp, bn = next_pool(hp, xp, bp, cfg), next_pool(hn, xn, bn, cfg)
+        return sum(terms) / len(terms)
     if not cfg.batch or cfg.batch >= len(pool_p):   # full-batch (default)
         for _ in range(cfg.epochs):
             opt.zero_grad()
-            loss(pool_p, pool_n).backward()
+            loss(pool_p, pool_n, Xp, Xn).backward()
             opt.step()
         return
     g = torch.Generator().manual_seed(seed)
@@ -255,14 +263,16 @@ def train_layer_ff(layer, pool_p, pool_n, theta, tau, cfg, seed):
         for idx in torch.randperm(len(pool_p), generator=g).split(cfg.batch):
             idx = idx.to(pool_p.device)
             opt.zero_grad()
-            loss(pool_p[idx], pool_n[idx]).backward()
+            loss(pool_p[idx], pool_n[idx], Xp[idx], Xn[idx]).backward()
             opt.step()
 
 def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
     """greedyパイプラインはそのまま(学習→即離散化→凍結)、ローカル目的だけ
     GroupSum+CEからFF goodnessに置き換えた版。ラベルは入力に重畳するので
     層にreadoutは無い。負例ラベルは層ごとに引き直す(正解を必ず避ける)"""
+    W, J = cfg.window, cfg.commit
     print("=== (A') Greedy layer-wise, Forward-Forward objective ==="
+          + (f" [window={W} commit={J}]" if W > 1 else "")
           + (" [skip-all wiring]" if cfg.skip_all else
              " [skip-input wiring]" if cfg.skip_input else ""))
     G = cfg.gates
@@ -271,22 +281,35 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
     Xp = ff_inputs(Xtr, ytr, cfg.n_class, cfg.ff_label_rep)
     layers, best_acc, best_depth, since_best = [], -1.0, 0, 0
     t0 = time.time()
-    for d in range(1, cfg.max_layers + 1):
+    stop = False
+    while not stop and len(layers) < cfg.max_layers:
+        d0 = len(layers)
         off = torch.randint(1, cfg.n_class, (len(ytr),), generator=gneg).to(ytr.device)
         Xn = ff_inputs(Xtr, (ytr + off) % cfg.n_class, cfg.n_class, cfg.ff_label_rep)
         pool_p, pool_n = ff_pool(layers, Xp, cfg), ff_pool(layers, Xn, cfg)
-        L = LogicLayer(pool_p.shape[1], G, seed=cfg.seed * 100 + d).to(cfg.device)
-        train_layer_ff(L, pool_p, pool_n, theta, tau, cfg, cfg.seed * 1000 + d)
-        layers.append(L)
-        a_tr = ff_accuracy(layers, Xtr, ytr, cfg)
-        a_te = ff_accuracy(layers, Xte, yte, cfg)
-        print(f"  layer {d}: goodness probe  train={a_tr:.4f}  test={a_te:.4f}")
-        if a_te > best_acc + 1e-4:
-            best_acc, best_depth, since_best = a_te, d, 0
-        else:
-            since_best += 1
-            if since_best >= cfg.patience:
-                print(f"  -> stop: no improvement for {cfg.patience} layers")
+        win, in_dim = [], pool_p.shape[1]
+        for k in range(W):
+            win.append(LogicLayer(in_dim, G,
+                                  seed=cfg.seed * 100 + d0 + k + 1).to(cfg.device))
+            in_dim = (in_dim + G if cfg.skip_all else
+                      Xp.shape[1] + G if cfg.skip_input else G)
+        train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
+                        cfg.seed * 1000 + d0 + 1)
+        for L in win[:J]:  # 窓の先頭J層だけ離散化して凍結
+            layers.append(L)
+            a_tr = ff_accuracy(layers, Xtr, ytr, cfg)
+            a_te = ff_accuracy(layers, Xte, yte, cfg)
+            print(f"  layer {len(layers)}: goodness probe"
+                  f"  train={a_tr:.4f}  test={a_te:.4f}")
+            if a_te > best_acc + 1e-4:
+                best_acc, best_depth, since_best = a_te, len(layers), 0
+            else:
+                since_best += 1
+                if since_best >= cfg.patience:
+                    print(f"  -> stop: no improvement for {cfg.patience} layers")
+                    stop = True
+                    break
+            if len(layers) >= cfg.max_layers:
                 break
     print(f"  greedy-FF: best goodness test acc = {best_acc:.4f} at depth {best_depth}"
           f"  ({time.time() - t0:.0f}s)\n")
@@ -514,8 +537,9 @@ def main():
     cfg = p.parse_args()
     if not (1 <= cfg.commit <= cfg.window):
         p.error("--commit must satisfy 1 <= commit <= window")
-    if cfg.objective == "ff" and (cfg.window > 1 or cfg.ensemble > 1):
-        p.error("--objective ff does not support --window/--ensemble yet")
+    if cfg.objective == "ff" and cfg.ensemble > 1:
+        p.error("--objective ff does not support --ensemble yet")
+    # FFの窓損失は常にdeep supervision(--win-lossはgroupsum専用でFFでは無視)
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
