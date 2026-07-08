@@ -58,6 +58,28 @@ Full run log: see [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1)
 
 Also observed: **duplicate-gate merging found 0 duplicates** — with fixed random wiring, two gates almost never share both inputs. The real simplification wins are pass-through and dead-gate removal (34% of gates here). If you came for De Morgan-style rewriting, this is the empirical answer.
 
+## Depth stress test: greedy survives 40 layers, backprop dies at ~12
+
+The first roadmap item, answered. We force greedy training to grow 40 layers (`--max-layers 40 --patience 40`) and train end-to-end baselines at fixed depths (`--e2e-depth N`). Same 500 gates/layer, RTX 3060 Laptop GPU. Hard-circuit test accuracy:
+
+| depth | greedy (hard probe at that layer) | end-to-end backprop (discretized) |
+|---|---|---|
+| 4 | **88.2%** (peak) | 93.6% |
+| 8 | 84.9% | 90.9% (a +1.3 pt discretization gap appears) |
+| 12 | 82.4% | **10.7% — chance level** |
+| 16 | 76.9% | 10.2% |
+| 24 | 71.3% | 10.0% |
+| 32 | 64.2% | 10.4% |
+| 40 | 56.0% | 10.0% |
+
+Three observations, stated honestly:
+
+1. **End-to-end backprop collapses to chance between depth 8 and 12** and never recovers. This is vanishing gradients, not undertraining: quadrupling the training budget at depth 40 (1,200 epochs) still gives 10.2%. Consistent with [Light DLGN](https://arxiv.org/abs/2510.03250)'s report of gradient norms below machine precision by ~16 layers — our layers are narrower (500 gates), which plausibly moves the cliff earlier.
+2. **Greedy training never stops learning.** At layer 40 the local objective still reaches 69.9% train / 56.0% test. No gradient ever crosses a layer boundary, so there is no depth at which the training signal can die.
+3. **Caveat: surviving depth ≠ exploiting depth.** Greedy's accuracy peaks at depth 4 and decays monotonically afterwards — each additional hard layer loses information (no skip connections yet). This experiment supports "greedy can train at any depth", not "deeper greedy networks are better". Turning survivable depth into *useful* depth is the skip-connections item in the roadmap below.
+
+Full run log: see [issue #1](https://github.com/Mming-Lab/greedy-lgn/issues/1).
+
 ## Quick start
 
 ```bash
@@ -65,11 +87,13 @@ pip install torch scikit-learn
 python experiment.py                                      # full run, a few min on CPU
 python experiment.py --gates 200 --epochs 30 --max-layers 3   # ~20 s smoke test
 python experiment.py --skip-e2e                           # greedy + simplification only
+python experiment.py --device cuda                        # same experiment on GPU (~10x faster)
+python experiment.py --device cuda --max-layers 40 --patience 40 --e2e-depth 40   # depth stress test
 ```
 
 ## Roadmap / open questions
 
-- [ ] **Depth stress test**: can greedy training grow 30–40 layer LGNs where standard backprop gradients vanish? (This would be the headline result.)
+- [x] **Depth stress test**: done — backprop collapses to chance at ~12 layers while greedy keeps learning at 40 (see [above](#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12)). The open half of the question is making that depth *useful*: greedy accuracy still peaks early and decays.
 - [ ] **Memory-matched comparison**: give greedy a 4× wider layer (same training memory as end-to-end) and compare accuracy.
 - [ ] MNIST / CIFAR-10 on GPU, on top of [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
 - [ ] Skip connections (concatenate input bits into every layer's wiring pool) to counter information loss from local objectives.
@@ -97,3 +121,5 @@ MIT
 論理ゲートネットワーク(DLGN)を**逆伝播なしで1層ずつ**学習する実証実験です。各層をローカルな損失(GroupSum+交差エントロピー)で学習したら**即座に離散化して凍結**し、次の層は本物の0/1ビットの上で学習します。検証精度が頭打ちになったら層の追加を止めるため、深さはハイパーパラメータではなく自動決定されます。学習後(将来的には成長の途中)に定数畳み込み・パススルー除去・重複マージ・デッドゲート削除で回路を簡略化し、元の回路と完全に同一の出力を返すことを検証します。
 
 現状の結果は正直に言って一長一短です:精度はend-to-end逆伝播に約5ポイント負けますが、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定、という利点があります。この交換が割に合う条件(深い回路・メモリ制約下)を探すのが上記ロードマップです。CPUで数分で再現できます。
+
+深さストレステスト(RTX 3060)では、**逆伝播は12層でチャンスレベル(10%)に崩壊**し、エポックを4倍にしても回復しませんでした(勾配消失)。一方**greedyは40層目でも学習が成立**します(train 69.9%)。ただしテスト精度のピークは深さ4のままで、深さを積むほど情報損失により単調劣化するため、「深さで生き残れる」と「深さを活かせる」は別問題です。後者の解決(skip connections)が次の課題です。
