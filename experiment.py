@@ -227,14 +227,19 @@ def ff_pool(layers, X, cfg):
     return pool
 
 @torch.no_grad()
-def ff_accuracy(layers, X, y, cfg):
-    """10ラベルを順に試し、最終層のgoodness(バイナリ層ではpopcount)が
-    最大になるラベルを予測とする(FFの標準的な推論手続き)"""
+def ff_goodness(layers, X, y, cfg):
+    """全candidateラベルを順に重畳して、最終層のgoodness(バイナリ層では
+    popcount)の行列 [N, n_class] を返す"""
     good = []
     for c in range(cfg.n_class):
         Xc = ff_inputs(X, torch.full_like(y, c), cfg.n_class, cfg.ff_label_rep)
         good.append(hard_forward(layers, Xc, cfg).sum(1))
-    return (torch.stack(good, 1).argmax(1) == y).float().mean().item()
+    return torch.stack(good, 1)
+
+@torch.no_grad()
+def ff_accuracy(layers, X, y, cfg):
+    """goodness最大のラベルを予測とする(FFの標準的な推論手続き)"""
+    return (ff_goodness(layers, X, y, cfg).argmax(1) == y).float().mean().item()
 
 def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed):
     """FFローカル損失で窓内W層をsoftのまま共同学習: 正例(正しいラベル重畳)の
@@ -273,6 +278,7 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
     W, J = cfg.window, cfg.commit
     print("=== (A') Greedy layer-wise, Forward-Forward objective ==="
           + (f" [window={W} commit={J}]" if W > 1 else "")
+          + (f" [neg={cfg.ff_neg}]" if cfg.ff_neg != "random" else "")
           + (" [skip-all wiring]" if cfg.skip_all else
              " [skip-input wiring]" if cfg.skip_input else ""))
     G = cfg.gates
@@ -285,7 +291,20 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
     while not stop and len(layers) < cfg.max_layers:
         d0 = len(layers)
         off = torch.randint(1, cfg.n_class, (len(ytr),), generator=gneg).to(ytr.device)
-        Xn = ff_inputs(Xtr, (ytr + off) % cfg.n_class, cfg.n_class, cfg.ff_label_rep)
+        yneg = (ytr + off) % cfg.n_class          # 一様ランダムな誤りラベル
+        if cfg.ff_neg != "random" and layers:
+            # hard negative: 凍結プレフィックスが最も騙されている誤ラベルを
+            # 負例にする(層を凍結するたびに選び直す=難問への自動カリキュラム)。
+            # 層1はプレフィックスが無いのでランダムのまま
+            g = ff_goodness(layers, Xtr, ytr, cfg)
+            g.scatter_(1, ytr.view(-1, 1), float("-inf"))   # 正解ラベルを除外
+            hard = g.argmax(1)
+            if cfg.ff_neg == "hard":
+                yneg = hard
+            else:                                 # mix: 最難とランダムを半々
+                coin = (torch.rand(len(ytr), generator=gneg) < 0.5).to(ytr.device)
+                yneg = torch.where(coin, hard, yneg)
+        Xn = ff_inputs(Xtr, yneg, cfg.n_class, cfg.ff_label_rep)
         pool_p, pool_n = ff_pool(layers, Xp, cfg), ff_pool(layers, Xn, cfg)
         win, in_dim = [], pool_p.shape[1]
         for k in range(W):
@@ -521,6 +540,10 @@ def main():
                         " or ff (Forward-Forward goodness = popcount on binary"
                         " layers; labels are overlaid on the input, inference tries"
                         " all 10 labels)")
+    p.add_argument("--ff-neg", choices=["random", "hard", "mix"], default="random",
+                   help="negative-label policy for ff: random wrong label (original),"
+                        " hard (the wrong label the frozen prefix finds most"
+                        " plausible, re-mined per layer), or mix (50/50)")
     p.add_argument("--ff-label-rep", type=int, default=1,
                    help="replicate the 10 overlaid label bits this many times so"
                         " random wiring actually samples them (ff objective only)")
