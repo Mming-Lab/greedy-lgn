@@ -260,10 +260,17 @@ Digits, seeds 1–4 (members 1–3 reproduce the known single-run numbers exactl
 
 | config | member mean | soft vote | majority vote |
 |---|---|---|---|
-| 500 gates, plain ×4 | 87.7% | 91.3% | 90.2% |
-| 500 gates, plain ×8 | 87.6% | 91.8% | 91.6% |
+| 500 gates, plain ×4 | 87.7% | 91.1%¹ | 90.2% |
+| 500 gates, plain ×8 | 87.6% | 92.0%¹ | 91.6% |
 | 500 gates, W=2 blocks ×4 | 89.9% | 92.2% | **92.4%** |
 | 2,000 gates + skip ×4 | 95.5% | 96.2% | **96.4% — repo best** |
+
+¹ Corrected. The originally posted soft votes (91.3% / 91.8%) came from summing
+τ-divided float counts across members, whose argmax flips on exactly-tied classes
+depending on the device's floating-point reduction order — a CPU/GPU mismatch found
+by the pinned regression suite (`tests.py`). Voting now sums exact integer counts
+(mathematically the same argmax, deterministic on every device); members and
+majority votes were unaffected. Corrected values are the deterministic ones.
 
 MNIST (500 gates/layer, `--batch 4096 --epochs 30`, seeds 1–4):
 
