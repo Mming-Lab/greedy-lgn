@@ -43,7 +43,7 @@ input bits ──► [train layer 1 (soft, local GroupSum loss)]
 
 ## Headline result
 
-`sklearn` digits (8×8, thermometer-binarized to 192 bits), 500 gates/layer, CPU:
+The starting point, on `sklearn` digits (8×8, thermometer-binarized to 192 bits), 500 gates/layer, CPU:
 
 | | greedy (this repo) | end-to-end backprop |
 |---|---|---|
@@ -53,7 +53,14 @@ input bits ──► [train layer 1 (soft, local GroupSum loss)]
 | float logits held during training | **8,000 (one layer)** | 32,000 (×4) |
 | circuit after simplification | 2,000 → **1,316 gates (65.8%)**, bit-identical | — |
 
-**The takeaway is mixed, and that's the point.** Plain local training loses ~5 pt of accuracy to backprop — in exchange for zero discretization gap, ~1/depth training memory, automatic depth, and a simplifiable circuit. The experiments below chip away at that 5 pt from different angles; most of it turned out to be recoverable.
+Plain local training loses ~5 pt of accuracy to backprop — in exchange for zero discretization gap, ~1/depth training memory, automatic depth, and a simplifiable circuit. The fun of this playground is watching the accuracy points move as the levers below get stacked. Where they end up (hard-circuit test accuracy, discretization gap still structurally zero throughout):
+
+| | plain greedy (start) | best stack so far | how |
+|---|---|---|---|
+| **digits** | 88.2% | **96.4%** | 2,000 gates + `--skip-input`, ×4 ensemble (majority vote) |
+| **MNIST** | 74.3% | **90.9%** | 4,000 gates + `--skip-input`, ×4 ensemble (soft vote) |
+
+For reference, end-to-end backprop at equal *training memory* averages 91.5% on digits — the best stack is above it, though it spends more inference-circuit area to get there. Every number here is honest about its cost; the [experiments below](#all-experiments-details-in-resultsmd) spell out which levers stack and which turned out to be dead ends.
 
 ## All experiments (details in [RESULTS.md](RESULTS.md))
 
@@ -138,6 +145,8 @@ MIT
 論理ゲートネットワーク(DLGN)を**逆伝播なしで1層ずつ**学習する実証実験です。各層をローカルな損失(GroupSum+交差エントロピー)で学習したら**即座に離散化して凍結**し、次の層は本物の0/1ビットの上で学習します。検証精度が頭打ちになったら層の追加を止めるため、深さは自動決定されます。学習後に回路を簡略化し、出力が完全に同一であることをビット単位で検証します。
 
 > **論文も読まない素人がAIと壁打ちしながらのお遊びです。** AIとアイデアを出し合って、実験して、精度(ポイント)の変化を楽しんでいるだけです。査読も受けていませんし、文献調査もAIに聞いた程度なので、新規性や優先権は一切主張しません。ここにあるアイデアの多くは、私が知らない名前で既に存在しているはずです。再現できる遊びのログとして読んでください。もし既存研究と重複していたら、それが普通です — issueで教えてもらえると助かります。
+
+この遊びの現在地(始点→ベスト、いずれもハード回路のテスト精度・離散化ギャップは常に構造的ゼロ): **digits 88.2% → 96.4%**(2,000ゲート+skip+×4アンサンブル多数決)、**MNIST 74.3% → 90.9%**(4,000ゲート+skip+×4アンサンブル soft vote)。以下はそこに至るまでにどのレバーが積み上がり、どれが死にレバーだったかの記録です。
 
 結果は正直に言って一長一短です: 素のgreedyはend-to-end逆伝播に約5pt負けますが(88.2% vs 93.6%)、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定という利点があります。その5ptの内訳を潰していくのが各実験です — **メモリ等価**(幅4倍でe2eと同じfloat予算)ではgreedyが3シード全勝(95.0% vs 91.5%)、**skip connections**(`--skip-input`)で初めて深さが精度に貢献、**MNIST**でも同じ構図が再現(84.6% vs 80.1%)、**先読み窓**(`--window 2`: 2層先まで逆伝播で共同学習してからまとめて離散化)で近視由来のギャップの約2/3を回収(90.4% vs 91.5%)、**アンサンブル投票**(`--ensemble M`: 独立学習した離散回路を横に並べて投票 — 並列評価なのでレイテンシ不変、投票回路込みで純粋な論理回路のまま)は他の全レバーと加算され、digitsで**96.4%**(自己ベスト)、MNISTでは4×500ゲートが単発2,000ゲートの従来ベストを半分の学習メモリで上回ります(84.7% vs 84.6%)。MNISTのスケーリングでは幅が支配的レバーで(4,000ゲート単発89.8%)、アンサンブル併用の**90.9%**で初めて90%を超えました(エポック増とwindow×幅は各+0.1ptで死にレバーと確認)。**Forward-Forward目的関数**(`--objective ff`: goodnessがバイナリ層ではpopcountになり、推論まで含めて純論理回路)は digits では教師ありローカルCEに2.4pt負けますが、**MNISTでは+2.5pt逆転**(76.8%)し、skipなしで初めて深さ17層を精度に変換しました(ランダム配線がラベルを見られるようにするラベルビット複製が必須という発見つき)。逆伝播は12層でチャンスレベルに崩壊する一方、greedyは40層目でも学習が成立します。
 
