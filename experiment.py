@@ -261,25 +261,29 @@ def ff_mine(layers, win, X, y, cfg):
         good.append(torch.cat(gs))
     return torch.stack(good, 1)
 
-def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed, epochs, opt):
+def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed, epochs, opt,
+                    w=None):
     """FFローカル損失で窓内W層をsoftのまま共同学習: 正例(正しいラベル重畳)の
     goodnessを閾値θより上へ、負例(誤りラベル重畳)を下へ押すロジスティック損失。
     θ=G/2はランダム初期化時の期待goodness(ゲート出力の平均≈0.5)に一致する。
     窓損失は常に全層平均(deep supervision) — コミット層のgoodnessが深さ選択の
     プローブかつ推論のreadoutなので、groupsumの--win-loss last相当は成立しない。
-    W=1・warmupなしで従来のFF 1層学習と厳密に一致する"""
-    def loss(bp, bn, xp, xn):
+    wはサンプル別損失重み(苦手問題への傾斜配分)、Noneで一様=従来と一致。
+    W=1・warmupなし・w=Noneで従来のFF 1層学習と厳密に一致する"""
+    def wmean(v, wb):
+        return v.mean() if wb is None else (v * wb).sum() / wb.sum()
+    def loss(bp, bn, xp, xn, wb):
         terms = []
         for L in win:
             hp, hn = L(bp), L(bn)
-            terms.append(F.softplus(-(hp.sum(1) - theta) / tau).mean()
-                         + F.softplus((hn.sum(1) - theta) / tau).mean())
+            terms.append(wmean(F.softplus(-(hp.sum(1) - theta) / tau), wb)
+                         + wmean(F.softplus((hn.sum(1) - theta) / tau), wb))
             bp, bn = next_pool(hp, xp, bp, cfg), next_pool(hn, xn, bn, cfg)
         return sum(terms) / len(terms)
     if not cfg.batch or cfg.batch >= len(pool_p):   # full-batch (default)
         for _ in range(epochs):
             opt.zero_grad()
-            loss(pool_p, pool_n, Xp, Xn).backward()
+            loss(pool_p, pool_n, Xp, Xn, w).backward()
             opt.step()
         return
     g = torch.Generator().manual_seed(seed)
@@ -287,7 +291,8 @@ def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed, epochs, 
         for idx in torch.randperm(len(pool_p), generator=g).split(cfg.batch):
             idx = idx.to(pool_p.device)
             opt.zero_grad()
-            loss(pool_p[idx], pool_n[idx], Xp[idx], Xn[idx]).backward()
+            loss(pool_p[idx], pool_n[idx], Xp[idx], Xn[idx],
+                 None if w is None else w[idx]).backward()
             opt.step()
 
 def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
@@ -299,6 +304,8 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
           + (f" [window={W} commit={J}]" if W > 1 else "")
           + (f" [neg={cfg.ff_neg}"
              + (f" warmup={cfg.ff_neg_warmup}" if cfg.ff_neg_warmup > 0 else "")
+             + (f" phases={cfg.ff_neg_phases}" if cfg.ff_neg_phases > 1 else "")
+             + (f" boost={cfg.ff_neg_boost}" if cfg.ff_neg_boost != 1.0 else "")
              + "]" if cfg.ff_neg != "random" else "")
           + (" [skip-all wiring]" if cfg.skip_all else
              " [skip-input wiring]" if cfg.skip_input else ""))
@@ -328,25 +335,38 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
         e1 = (cfg.epochs if not mining else
               max(1, int(cfg.epochs * cfg.ff_neg_warmup)) if cfg.ff_neg_warmup > 0
               else 0)
-        if e1:  # フェーズ1: 通常学習(ランダム負例)
+        seed_w = cfg.seed * 1000 + d0 + 1
+        if e1:  # フェーズ0: 通常学習(ランダム負例)
             train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
-                            cfg.seed * 1000 + d0 + 1, e1, opt)
-        if mining and cfg.epochs - e1 > 0:  # フェーズ2: 模試→間違いの重点復習
-            g = ff_mine(layers, win if cfg.ff_neg_warmup > 0 else [], Xtr, ytr, cfg)
-            pred = g.argmax(1)
-            g.scatter_(1, ytr.view(-1, 1), float("-inf"))   # 正解ラベルを除外
-            hard = g.argmax(1)          # 正解以外で最尤 = いま一番騙されるラベル
-            if cfg.ff_neg == "hard":
-                yneg = hard
-            elif cfg.ff_neg == "mix":   # 最難とランダムを半々
-                coin = (torch.rand(len(ytr), generator=gneg) < 0.5).to(ytr.device)
-                yneg = torch.where(coin, hard, yneg)
-            else:                       # review: 誤答したサンプルは自分の誤答を
-                yneg = torch.where(pred != ytr, pred, yneg)  # 負例に、正解は通常
-            Xn = ff_inputs(Xtr, yneg, cfg.n_class, cfg.ff_label_rep)
-            pool_n = ff_pool(layers, Xn, cfg)
-            train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
-                            cfg.seed * 1000 + d0 + 1, cfg.epochs - e1, opt)
+                            seed_w, e1, opt)
+        rem = cfg.epochs - e1
+        if mining and rem > 0:  # 反復フェーズ: 模試→再マイニング→間違いの重点復習
+            yneg_rand = yneg                        # ランダム負例のベース(不変)
+            grader = win if cfg.ff_neg_warmup > 0 else []  # 学習中の窓 or 凍結前層
+            K = cfg.ff_neg_phases
+            for ph in range(K):
+                ep = rem // K + (1 if ph < rem % K else 0)  # 残りをK等分
+                if ep == 0:
+                    continue
+                g = ff_mine(layers, grader, Xtr, ytr, cfg)  # 模試(現在の窓で採点)
+                pred = g.argmax(1)
+                wrong = pred != ytr
+                g.scatter_(1, ytr.view(-1, 1), float("-inf"))   # 正解を除外
+                hard = g.argmax(1)      # 正解以外で最尤 = いま一番騙されるラベル
+                if cfg.ff_neg == "hard":
+                    yneg = hard
+                elif cfg.ff_neg == "mix":   # 最難とランダムを半々
+                    coin = (torch.rand(len(ytr), generator=gneg) < 0.5).to(ytr.device)
+                    yneg = torch.where(coin, hard, yneg_rand)
+                else:                       # review: 誤答は自分の誤答を負例に
+                    yneg = torch.where(wrong, pred, yneg_rand)
+                Xn = ff_inputs(Xtr, yneg, cfg.n_class, cfg.ff_label_rep)
+                pool_n = ff_pool(layers, Xn, cfg)
+                # boost: 誤答サンプルの損失をB倍に傾斜(苦手問題に時間を割く)
+                w = (torch.where(wrong, float(cfg.ff_neg_boost), 1.0)
+                     if cfg.ff_neg_boost != 1.0 else None)
+                train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
+                                seed_w, ep, opt, w)
         for L in win[:J]:  # 窓の先頭J層だけ離散化して凍結
             layers.append(L)
             a_tr = ff_accuracy(layers, Xtr, ytr, cfg)
@@ -584,6 +604,15 @@ def main():
                         " negatives before mining (0 = mine from the frozen prefix"
                         " only, from layer 2 on; >0 = the partially trained layer"
                         " itself takes the mock exam, so layer 1 participates too)")
+    p.add_argument("--ff-neg-phases", type=int, default=1,
+                   help="split the post-warmup epochs into this many phases,"
+                        " re-taking the mock exam and re-mining negatives before"
+                        " each (1 = mine once; >1 needs --ff-neg-warmup > 0 to"
+                        " differ, since the frozen-prefix grader is static)")
+    p.add_argument("--ff-neg-boost", type=float, default=1.0,
+                   help="weight the loss of currently-misclassified samples this"
+                        " many times higher (spend more gradient on hard examples;"
+                        " 1.0 = uniform, the original behaviour)")
     p.add_argument("--ff-label-rep", type=int, default=1,
                    help="replicate the 10 overlaid label bits this many times so"
                         " random wiring actually samples them (ff objective only)")
