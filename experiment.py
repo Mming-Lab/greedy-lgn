@@ -241,14 +241,33 @@ def ff_accuracy(layers, X, y, cfg):
     """goodness最大のラベルを予測とする(FFの標準的な推論手続き)"""
     return (ff_goodness(layers, X, y, cfg).argmax(1) == y).float().mean().item()
 
-def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed):
+@torch.no_grad()
+def ff_mine(layers, win, X, y, cfg):
+    """「模試」: 凍結プレフィックス(+学習途中の窓があればsoftで)を通した
+    goodness行列 [N, n_class] を返す。負例マイニングと誤答抽出に使う"""
+    good = []
+    for c in range(cfg.n_class):
+        Xc = ff_inputs(X, torch.full_like(y, c), cfg.n_class, cfg.ff_label_rep)
+        gs = []
+        for xc in Xc.split(8192):
+            if win:
+                pool, h = ff_pool(layers, xc, cfg), None
+                for L in win:
+                    h = L(pool)
+                    pool = next_pool(h, xc, pool, cfg)
+            else:
+                h = hard_forward(layers, xc, cfg)
+            gs.append(h.sum(1))
+        good.append(torch.cat(gs))
+    return torch.stack(good, 1)
+
+def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed, epochs, opt):
     """FFローカル損失で窓内W層をsoftのまま共同学習: 正例(正しいラベル重畳)の
     goodnessを閾値θより上へ、負例(誤りラベル重畳)を下へ押すロジスティック損失。
     θ=G/2はランダム初期化時の期待goodness(ゲート出力の平均≈0.5)に一致する。
     窓損失は常に全層平均(deep supervision) — コミット層のgoodnessが深さ選択の
     プローブかつ推論のreadoutなので、groupsumの--win-loss last相当は成立しない。
-    W=1で従来のFF 1層学習と厳密に一致する"""
-    opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
+    W=1・warmupなしで従来のFF 1層学習と厳密に一致する"""
     def loss(bp, bn, xp, xn):
         terms = []
         for L in win:
@@ -258,13 +277,13 @@ def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed):
             bp, bn = next_pool(hp, xp, bp, cfg), next_pool(hn, xn, bn, cfg)
         return sum(terms) / len(terms)
     if not cfg.batch or cfg.batch >= len(pool_p):   # full-batch (default)
-        for _ in range(cfg.epochs):
+        for _ in range(epochs):
             opt.zero_grad()
             loss(pool_p, pool_n, Xp, Xn).backward()
             opt.step()
         return
     g = torch.Generator().manual_seed(seed)
-    for _ in range(cfg.epochs):
+    for _ in range(epochs):
         for idx in torch.randperm(len(pool_p), generator=g).split(cfg.batch):
             idx = idx.to(pool_p.device)
             opt.zero_grad()
@@ -278,7 +297,9 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
     W, J = cfg.window, cfg.commit
     print("=== (A') Greedy layer-wise, Forward-Forward objective ==="
           + (f" [window={W} commit={J}]" if W > 1 else "")
-          + (f" [neg={cfg.ff_neg}]" if cfg.ff_neg != "random" else "")
+          + (f" [neg={cfg.ff_neg}"
+             + (f" warmup={cfg.ff_neg_warmup}" if cfg.ff_neg_warmup > 0 else "")
+             + "]" if cfg.ff_neg != "random" else "")
           + (" [skip-all wiring]" if cfg.skip_all else
              " [skip-input wiring]" if cfg.skip_input else ""))
     G = cfg.gates
@@ -292,18 +313,6 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
         d0 = len(layers)
         off = torch.randint(1, cfg.n_class, (len(ytr),), generator=gneg).to(ytr.device)
         yneg = (ytr + off) % cfg.n_class          # 一様ランダムな誤りラベル
-        if cfg.ff_neg != "random" and layers:
-            # hard negative: 凍結プレフィックスが最も騙されている誤ラベルを
-            # 負例にする(層を凍結するたびに選び直す=難問への自動カリキュラム)。
-            # 層1はプレフィックスが無いのでランダムのまま
-            g = ff_goodness(layers, Xtr, ytr, cfg)
-            g.scatter_(1, ytr.view(-1, 1), float("-inf"))   # 正解ラベルを除外
-            hard = g.argmax(1)
-            if cfg.ff_neg == "hard":
-                yneg = hard
-            else:                                 # mix: 最難とランダムを半々
-                coin = (torch.rand(len(ytr), generator=gneg) < 0.5).to(ytr.device)
-                yneg = torch.where(coin, hard, yneg)
         Xn = ff_inputs(Xtr, yneg, cfg.n_class, cfg.ff_label_rep)
         pool_p, pool_n = ff_pool(layers, Xp, cfg), ff_pool(layers, Xn, cfg)
         win, in_dim = [], pool_p.shape[1]
@@ -312,8 +321,32 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
                                   seed=cfg.seed * 100 + d0 + k + 1).to(cfg.device))
             in_dim = (in_dim + G if cfg.skip_all else
                       Xp.shape[1] + G if cfg.skip_input else G)
-        train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
-                        cfg.seed * 1000 + d0 + 1)
+        opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
+        # マイニングは「模試の採点者」がいるときだけ発動: warmupありなら学習途中の
+        # 窓自身が採点者になれる(層1でも可)、warmupなしは凍結プレフィックスのみ
+        mining = cfg.ff_neg != "random" and (bool(layers) or cfg.ff_neg_warmup > 0)
+        e1 = (cfg.epochs if not mining else
+              max(1, int(cfg.epochs * cfg.ff_neg_warmup)) if cfg.ff_neg_warmup > 0
+              else 0)
+        if e1:  # フェーズ1: 通常学習(ランダム負例)
+            train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
+                            cfg.seed * 1000 + d0 + 1, e1, opt)
+        if mining and cfg.epochs - e1 > 0:  # フェーズ2: 模試→間違いの重点復習
+            g = ff_mine(layers, win if cfg.ff_neg_warmup > 0 else [], Xtr, ytr, cfg)
+            pred = g.argmax(1)
+            g.scatter_(1, ytr.view(-1, 1), float("-inf"))   # 正解ラベルを除外
+            hard = g.argmax(1)          # 正解以外で最尤 = いま一番騙されるラベル
+            if cfg.ff_neg == "hard":
+                yneg = hard
+            elif cfg.ff_neg == "mix":   # 最難とランダムを半々
+                coin = (torch.rand(len(ytr), generator=gneg) < 0.5).to(ytr.device)
+                yneg = torch.where(coin, hard, yneg)
+            else:                       # review: 誤答したサンプルは自分の誤答を
+                yneg = torch.where(pred != ytr, pred, yneg)  # 負例に、正解は通常
+            Xn = ff_inputs(Xtr, yneg, cfg.n_class, cfg.ff_label_rep)
+            pool_n = ff_pool(layers, Xn, cfg)
+            train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
+                            cfg.seed * 1000 + d0 + 1, cfg.epochs - e1, opt)
         for L in win[:J]:  # 窓の先頭J層だけ離散化して凍結
             layers.append(L)
             a_tr = ff_accuracy(layers, Xtr, ytr, cfg)
@@ -540,10 +573,17 @@ def main():
                         " or ff (Forward-Forward goodness = popcount on binary"
                         " layers; labels are overlaid on the input, inference tries"
                         " all 10 labels)")
-    p.add_argument("--ff-neg", choices=["random", "hard", "mix"], default="random",
+    p.add_argument("--ff-neg", choices=["random", "hard", "mix", "review"],
+                   default="random",
                    help="negative-label policy for ff: random wrong label (original),"
-                        " hard (the wrong label the frozen prefix finds most"
-                        " plausible, re-mined per layer), or mix (50/50)")
+                        " hard (the most plausible wrong label, re-mined per layer),"
+                        " mix (hard/random 50/50), or review (misclassified samples"
+                        " study their own wrong answer, correct ones stay random)")
+    p.add_argument("--ff-neg-warmup", type=float, default=0.0,
+                   help="fraction of each layer's epochs trained with random"
+                        " negatives before mining (0 = mine from the frozen prefix"
+                        " only, from layer 2 on; >0 = the partially trained layer"
+                        " itself takes the mock exam, so layer 1 participates too)")
     p.add_argument("--ff-label-rep", type=int, default=1,
                    help="replicate the 10 overlaid label bits this many times so"
                         " random wiring actually samples them (ff objective only)")
