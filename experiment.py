@@ -14,6 +14,9 @@ Usage:
     python experiment.py --ensemble 4            # 4 independent nets + voting
     python experiment.py --objective ff          # Forward-Forward local objective
     python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30   # MNIST
+
+Regression: any change to this file must keep every number in tests.py exact
+(`python tests.py`). The published results depend on bit-exact reproducibility.
 """
 import argparse, json, time
 import numpy as np
@@ -86,40 +89,12 @@ def accuracy(logits, y):
 
 def next_pool(h, X, pool_prev, cfg):
     """あるレイヤーの出力hを受けて、その次のレイヤーの配線プールを作る
-    (soft/hard共通。run_greedyの凍結時と窓内softフォワードで同一規則を使う)"""
+    (soft/hard共通。凍結時と窓内softフォワードで同一規則を使う)"""
     if cfg.skip_all:      # DenseNet-style: input + every previous layer
         return torch.cat([pool_prev, h], 1)
     if cfg.skip_input:    # input + previous layer only
         return torch.cat([X, h], 1)
     return h
-
-def train_window(win, pool0, X, y, cfg, tau, seed):
-    """窓内のW層をsoftのまま逆伝搬で共同学習する(receding horizonの1ステップ)。
-    損失は窓の最終層のCE(--win-loss last)か全層平均(--win-loss all)。
-    W=1のとき従来のgreedy 1層学習と厳密に一致する。"""
-    opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
-    def loss(pool, Xb, yb):
-        h, terms = None, []
-        for L in win:
-            h = L(pool)
-            if cfg.win_loss == "all":
-                terms.append(F.cross_entropy(group_sum(h, cfg.n_class, tau), yb))
-            pool = next_pool(h, Xb, pool, cfg)
-        return (sum(terms) / len(terms) if cfg.win_loss == "all"
-                else F.cross_entropy(group_sum(h, cfg.n_class, tau), yb))
-    if not cfg.batch or cfg.batch >= len(pool0):   # full-batch (default)
-        for _ in range(cfg.epochs):
-            opt.zero_grad()
-            loss(pool0, X, y).backward()
-            opt.step()
-        return
-    g = torch.Generator().manual_seed(seed)
-    for _ in range(cfg.epochs):
-        for idx in torch.randperm(len(pool0), generator=g).split(cfg.batch):
-            idx = idx.to(pool0.device)
-            opt.zero_grad()
-            loss(pool0[idx], X[idx], y[idx]).backward()
-            opt.step()
 
 @torch.no_grad()
 def hard_batched(layer, x, budget=8192 * 500):  # bound the [B, G, 16] temporary
@@ -127,251 +102,257 @@ def hard_batched(layer, x, budget=8192 * 500):  # bound the [B, G, 16] temporary
     return layer.hard(x) if len(x) <= chunk else torch.cat(
         [layer.hard(c) for c in x.split(chunk)])
 
-# ----------------------------- (A) greedy layer-wise -----------------------------
-def run_greedy(Xtr, Xte, ytr, yte, cfg):
-    W, J = cfg.window, cfg.commit
-    print("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
-          + (f" [window={W} commit={J} loss={cfg.win_loss}]" if W > 1 else "")
-          + (" [skip-all wiring]" if cfg.skip_all else
-             " [skip-input wiring]" if cfg.skip_input else ""))
-    tau = float(np.sqrt(cfg.gates / cfg.n_class))
-    layers, pool_tr, pool_te = [], Xtr, Xte
-    best_acc, best_depth, since_best = -1.0, 0, 0
-    t0 = time.time()
-    stop = False
-    while not stop and len(layers) < cfg.max_layers:
-        d0 = len(layers)
-        # 凍結済みプレフィックスの上にW層の窓を新規作成(スライドごとに再計画。
-        # コミットされなかったlookahead層は捨てる = receding horizon)
-        win, in_dim = [], pool_tr.shape[1]
-        for k in range(W):
-            win.append(LogicLayer(in_dim, cfg.gates,
-                                  seed=cfg.seed * 100 + d0 + k + 1).to(cfg.device))
-            in_dim = (in_dim + cfg.gates if cfg.skip_all else
-                      Xtr.shape[1] + cfg.gates if cfg.skip_input else cfg.gates)
-        train_window(win, pool_tr, Xtr, ytr, cfg, tau, cfg.seed * 1000 + d0 + 1)
-        for L in win[:J]:  # 窓の先頭J層だけ離散化して凍結(HARDビット上で確定)
-            h_tr, h_te = hard_batched(L, pool_tr), hard_batched(L, pool_te)
-            a_te = accuracy(group_sum(h_te, cfg.n_class, tau), yte)
-            a_tr = accuracy(group_sum(h_tr, cfg.n_class, tau), ytr)
-            layers.append(L)
-            print(f"  layer {len(layers)}: hard probe  train={a_tr:.4f}  test={a_te:.4f}")
-            pool_tr = next_pool(h_tr, Xtr, pool_tr, cfg)
-            pool_te = next_pool(h_te, Xte, pool_te, cfg)
-            if a_te > best_acc + 1e-4:
-                best_acc, best_depth, since_best = a_te, len(layers), 0
-            else:
-                since_best += 1
-                if since_best >= cfg.patience:
-                    print(f"  -> stop: no improvement for {cfg.patience} layers")
-                    stop = True
-                    break
-            if len(layers) >= cfg.max_layers:
-                break
-    print(f"  greedy: best hard test acc = {best_acc:.4f} at depth {best_depth}"
-          f"  ({time.time() - t0:.0f}s)\n")
-    return layers[:best_depth], best_acc, best_depth
-
-# ----------------------------- (D) ensemble of greedy networks -----------------------------
-def hard_forward(layers, X, cfg):
-    """凍結済みネットワーク全体をhardで評価して最終層の出力ビットを返す"""
+def hard_pass(layers, X, cfg):
+    """凍結済み層をhardで順に評価し、(最終層の出力h, 次層の配線プール)を返す。
+    layersが空のときは (None, X)"""
     pool, h = X, None
     for L in layers:
         h = hard_batched(L, pool)
         pool = next_pool(h, X, pool, cfg)
-    return h
+    return h, pool
 
-def run_ensemble(Xtr, Xte, ytr, yte, cfg):
-    """独立に学習したM本のgreedyネットワーク(シードのみ変える)を横に並べて投票。
-    soft vote: 各メンバーのGroupSumカウントを合算してargmax
-               (= 最終層を連結した幅M倍のGroupSum readoutと数学的に等価)
-    majority : 各メンバーのargmaxで多数決。同数タイは合算カウントの大きい方
-               (0.99倍で正規化したスコアを足すので票数の優劣は覆らない)"""
-    M, base_seed = cfg.ensemble, cfg.seed
-    tau = float(np.sqrt(cfg.gates / cfg.n_class))
-    members, member_acc, depths = [], [], []
-    for m in range(M):
-        cfg.seed = base_seed + m
-        print(f"--- ensemble member {m + 1}/{M} (seed {cfg.seed}) ---")
-        layers, acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
-        members.append(layers); member_acc.append(acc); depths.append(depth)
-    cfg.seed = base_seed
-    counts = torch.stack([group_sum(hard_forward(ls, Xte, cfg), cfg.n_class, tau)
-                          for ls in members])                    # [M, B, n_class]
-    soft_acc = accuracy(counts.sum(0), yte)
-    votes = F.one_hot(counts.argmax(-1), cfg.n_class).sum(0).float()
-    c = counts.sum(0)
-    t = (c - c.amin(1, keepdim=True)) / (c.amax(1, keepdim=True)
-                                         - c.amin(1, keepdim=True) + 1e-9)
-    maj_acc = accuracy(votes + 0.99 * t, yte)
-    print(f"=== (D) Ensemble vote over {M} members ===")
-    print(f"  member acc: {' / '.join(f'{a:.4f}' for a in member_acc)}"
-          f"  (mean {float(np.mean(member_acc)):.4f}, depths {depths})")
-    print(f"  soft vote (summed GroupSum counts) = {soft_acc:.4f}")
-    print(f"  majority vote (count tie-break)    = {maj_acc:.4f}\n")
-    return members, member_acc, depths, soft_acc, maj_acc
+def fit(loss, n, cfg, seed, epochs, opt):
+    """full-batch / minibatch 共通のエポックループ。loss(idx) は idx=None で
+    全バッチ、Tensorでその行だけの損失を返すクロージャ"""
+    if not cfg.batch or cfg.batch >= n:   # full-batch (default)
+        for _ in range(epochs):
+            opt.zero_grad()
+            loss(None).backward()
+            opt.step()
+        return
+    g = torch.Generator().manual_seed(seed)
+    for _ in range(epochs):
+        for idx in torch.randperm(n, generator=g).split(cfg.batch):
+            idx = idx.to(cfg.device)
+            opt.zero_grad()
+            loss(idx).backward()
+            opt.step()
 
-# ----------------------------- (A') Forward-Forward objective -----------------------------
+# ----------------------------- local objectives -----------------------------
+# greedyループ(run_greedy)は目的関数に依存しない骨格で、各objectiveが
+# begin(窓の準備)/train(窓の学習)/commit(離散化後のプローブ)/counts(投票用
+# クラス別スコア)を提供する。obj.X は配線プールの基底(skip-input用)。
+
+class GroupSum:
+    """従来のローカル目的: 各層のGroupSum+CE readout。プールは増分更新で保持"""
+    kind, tag = "hard", "greedy"
+    def __init__(self, Xtr, Xte, ytr, yte, cfg):
+        self.cfg, self.ytr, self.yte = cfg, ytr, yte
+        self.X, self.Xte = Xtr, Xte              # 配線プールの基底(skip用)
+        self.pool_tr, self.pool_te = Xtr, Xte
+        self.tau = float(np.sqrt(cfg.gates / cfg.n_class))
+    def header(self):
+        cfg = self.cfg
+        return ("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
+                + (f" [window={cfg.window} commit={cfg.commit} loss={cfg.win_loss}]"
+                   if cfg.window > 1 else ""))
+    def begin(self, layers, d0):   # 窓学習の準備。窓の入力次元を返す
+        return self.pool_tr.shape[1]
+    def train(self, win, layers, d0):
+        """窓内W層をsoftのまま共同学習(receding horizonの1ステップ)。
+        損失は窓の最終層のCE(--win-loss last)か全層平均(--win-loss all)。
+        W=1のとき従来のgreedy 1層学習と厳密に一致する"""
+        cfg = self.cfg
+        opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
+        def loss(idx):
+            pool = self.pool_tr if idx is None else self.pool_tr[idx]
+            X = self.X if idx is None else self.X[idx]
+            y = self.ytr if idx is None else self.ytr[idx]
+            h, terms = None, []
+            for L in win:
+                h = L(pool)
+                if cfg.win_loss == "all":
+                    terms.append(F.cross_entropy(
+                        group_sum(h, cfg.n_class, self.tau), y))
+                pool = next_pool(h, X, pool, cfg)
+            return (sum(terms) / len(terms) if cfg.win_loss == "all"
+                    else F.cross_entropy(group_sum(h, cfg.n_class, self.tau), y))
+        fit(loss, len(self.pool_tr), cfg, cfg.seed * 1000 + d0 + 1, cfg.epochs, opt)
+    def commit(self, layers, L):
+        """Lを離散化・凍結してプールをHARDビットで前進。(train, test)プローブを返す"""
+        cfg = self.cfg
+        h_tr, h_te = hard_batched(L, self.pool_tr), hard_batched(L, self.pool_te)
+        a_te = accuracy(group_sum(h_te, cfg.n_class, self.tau), self.yte)
+        a_tr = accuracy(group_sum(h_tr, cfg.n_class, self.tau), self.ytr)
+        self.pool_tr = next_pool(h_tr, self.X, self.pool_tr, cfg)
+        self.pool_te = next_pool(h_te, self.Xte, self.pool_te, cfg)
+        return a_tr, a_te
+    @torch.no_grad()
+    def counts(self, layers, X, y):
+        """アンサンブル投票用のクラス別スコア [B, n_class](=GroupSumカウント)。
+        τで割らず厳密な整数カウントを返す: argmaxには数学的に無関係だが、
+        τ除算後のfloatをメンバー間で合算すると、合計が同点のクラス同士で
+        丸め順序の差によりargmaxがCPU/GPUで割れる(tests.pyが発見した
+        soft voteの不一致 0.9133 vs 0.9111 の原因と修正)"""
+        h, _ = hard_pass(layers, X, self.cfg)
+        return group_sum(h, self.cfg.n_class, 1.0)
+
 def ff_inputs(X, y, n_class, rep=1):
     """FF流にラベルを入力へ重畳: one-hot 10ビットをrep回複製して連結する。
     ランダム2入力配線では、ラベルビットがプールの一定割合を占めないと
     ほとんどのゲートがラベルを見ない(rep=1だと約10%しか触れない)"""
     return torch.cat([X, F.one_hot(y, n_class).float().repeat(1, rep)], 1)
 
-def ff_pool(layers, X, cfg):
-    """凍結プレフィックスをhardで通し、次に学習する層の配線プールを返す"""
-    pool = X
-    for L in layers:
-        h = hard_batched(L, pool)
-        pool = next_pool(h, X, pool, cfg)
-    return pool
-
-@torch.no_grad()
-def ff_goodness(layers, X, y, cfg):
-    """全candidateラベルを順に重畳して、最終層のgoodness(バイナリ層では
-    popcount)の行列 [N, n_class] を返す"""
-    good = []
-    for c in range(cfg.n_class):
-        Xc = ff_inputs(X, torch.full_like(y, c), cfg.n_class, cfg.ff_label_rep)
-        good.append(hard_forward(layers, Xc, cfg).sum(1))
-    return torch.stack(good, 1)
-
-@torch.no_grad()
-def ff_accuracy(layers, X, y, cfg):
-    """goodness最大のラベルを予測とする(FFの標準的な推論手続き)"""
-    return (ff_goodness(layers, X, y, cfg).argmax(1) == y).float().mean().item()
-
-@torch.no_grad()
-def ff_mine(layers, win, X, y, cfg):
-    """「模試」: 凍結プレフィックス(+学習途中の窓があればsoftで)を通した
-    goodness行列 [N, n_class] を返す。負例マイニングと誤答抽出に使う"""
-    good = []
-    for c in range(cfg.n_class):
-        Xc = ff_inputs(X, torch.full_like(y, c), cfg.n_class, cfg.ff_label_rep)
-        gs = []
-        for xc in Xc.split(8192):
-            if win:
-                pool, h = ff_pool(layers, xc, cfg), None
-                for L in win:
-                    h = L(pool)
-                    pool = next_pool(h, xc, pool, cfg)
-            else:
-                h = hard_forward(layers, xc, cfg)
-            gs.append(h.sum(1))
-        good.append(torch.cat(gs))
-    return torch.stack(good, 1)
-
-def train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg, seed, epochs, opt,
-                    w=None):
-    """FFローカル損失で窓内W層をsoftのまま共同学習: 正例(正しいラベル重畳)の
-    goodnessを閾値θより上へ、負例(誤りラベル重畳)を下へ押すロジスティック損失。
-    θ=G/2はランダム初期化時の期待goodness(ゲート出力の平均≈0.5)に一致する。
+class ForwardForward:
+    """FF目的: goodness(バイナリ層ではpopcount)を正例で上げ負例で下げる。
+    ラベルは入力に重畳するので層にreadoutは無く、推論は全ラベル試行。
+    層内は勾配学習のまま(FFは目的関数の置換であり勾配フリー化ではない)。
     窓損失は常に全層平均(deep supervision) — コミット層のgoodnessが深さ選択の
-    プローブかつ推論のreadoutなので、groupsumの--win-loss last相当は成立しない。
-    wはサンプル別損失重み(苦手問題への傾斜配分)、Noneで一様=従来と一致。
-    W=1・warmupなし・w=Noneで従来のFF 1層学習と厳密に一致する"""
-    def wmean(v, wb):
-        return v.mean() if wb is None else (v * wb).sum() / wb.sum()
-    def loss(bp, bn, xp, xn, wb):
-        terms = []
-        for L in win:
-            hp, hn = L(bp), L(bn)
-            terms.append(wmean(F.softplus(-(hp.sum(1) - theta) / tau), wb)
-                         + wmean(F.softplus((hn.sum(1) - theta) / tau), wb))
-            bp, bn = next_pool(hp, xp, bp, cfg), next_pool(hn, xn, bn, cfg)
-        return sum(terms) / len(terms)
-    if not cfg.batch or cfg.batch >= len(pool_p):   # full-batch (default)
-        for _ in range(epochs):
-            opt.zero_grad()
-            loss(pool_p, pool_n, Xp, Xn, w).backward()
-            opt.step()
-        return
-    g = torch.Generator().manual_seed(seed)
-    for _ in range(epochs):
-        for idx in torch.randperm(len(pool_p), generator=g).split(cfg.batch):
-            idx = idx.to(pool_p.device)
-            opt.zero_grad()
-            loss(pool_p[idx], pool_n[idx], Xp[idx], Xn[idx],
-                 None if w is None else w[idx]).backward()
-            opt.step()
-
-def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
-    """greedyパイプラインはそのまま(学習→即離散化→凍結)、ローカル目的だけ
-    GroupSum+CEからFF goodnessに置き換えた版。ラベルは入力に重畳するので
-    層にreadoutは無い。負例ラベルは層ごとに引き直す(正解を必ず避ける)"""
-    W, J = cfg.window, cfg.commit
-    print("=== (A') Greedy layer-wise, Forward-Forward objective ==="
-          + (f" [window={W} commit={J}]" if W > 1 else "")
-          + (f" [neg={cfg.ff_neg}"
-             + (f" warmup={cfg.ff_neg_warmup}" if cfg.ff_neg_warmup > 0 else "")
-             + (f" phases={cfg.ff_neg_phases}" if cfg.ff_neg_phases > 1 else "")
-             + (f" boost={cfg.ff_neg_boost}" if cfg.ff_neg_boost != 1.0 else "")
-             + "]" if cfg.ff_neg != "random" else "")
-          + (" [skip-all wiring]" if cfg.skip_all else
-             " [skip-input wiring]" if cfg.skip_input else ""))
-    G = cfg.gates
-    theta, tau = G / 2, float(np.sqrt(G))
-    gneg = torch.Generator().manual_seed(cfg.seed * 31)
-    Xp = ff_inputs(Xtr, ytr, cfg.n_class, cfg.ff_label_rep)
-    layers, best_acc, best_depth, since_best = [], -1.0, 0, 0
-    t0 = time.time()
-    stop = False
-    while not stop and len(layers) < cfg.max_layers:
-        d0 = len(layers)
-        off = torch.randint(1, cfg.n_class, (len(ytr),), generator=gneg).to(ytr.device)
-        yneg = (ytr + off) % cfg.n_class          # 一様ランダムな誤りラベル
-        Xn = ff_inputs(Xtr, yneg, cfg.n_class, cfg.ff_label_rep)
-        pool_p, pool_n = ff_pool(layers, Xp, cfg), ff_pool(layers, Xn, cfg)
-        win, in_dim = [], pool_p.shape[1]
-        for k in range(W):
-            win.append(LogicLayer(in_dim, G,
-                                  seed=cfg.seed * 100 + d0 + k + 1).to(cfg.device))
-            in_dim = (in_dim + G if cfg.skip_all else
-                      Xp.shape[1] + G if cfg.skip_input else G)
+    プローブかつ推論のreadoutなので、groupsumの--win-loss last相当は成立しない"""
+    kind, tag = "goodness", "greedy-FF"
+    def __init__(self, Xtr, Xte, ytr, yte, cfg):
+        self.cfg, self.Xtr, self.Xte, self.ytr, self.yte = cfg, Xtr, Xte, ytr, yte
+        G = cfg.gates
+        # θ=G/2はランダム初期化時の期待goodness(ゲート出力の平均≈0.5)に一致
+        self.theta, self.tau = G / 2, float(np.sqrt(G))
+        self.gneg = torch.Generator().manual_seed(cfg.seed * 31)
+        self.X = ff_inputs(Xtr, ytr, cfg.n_class, cfg.ff_label_rep)  # 正例=配線基底
+    def header(self):
+        cfg = self.cfg
+        return ("=== (A') Greedy layer-wise, Forward-Forward objective ==="
+                + (f" [window={cfg.window} commit={cfg.commit}]"
+                   if cfg.window > 1 else "")
+                + (f" [neg={cfg.ff_neg}"
+                   + (f" warmup={cfg.ff_neg_warmup}" if cfg.ff_neg_warmup > 0 else "")
+                   + (f" phases={cfg.ff_neg_phases}" if cfg.ff_neg_phases > 1 else "")
+                   + (f" boost={cfg.ff_neg_boost}" if cfg.ff_neg_boost != 1.0 else "")
+                   + "]" if cfg.ff_neg != "random" else ""))
+    def begin(self, layers, d0):
+        """負例ラベルを引き直し(正解を必ず避ける)、正例/負例プールを
+        凍結プレフィックスで前進させる。窓の入力次元を返す"""
+        cfg = self.cfg
+        off = torch.randint(1, cfg.n_class, (len(self.ytr),),
+                            generator=self.gneg).to(self.ytr.device)
+        self.yneg = (self.ytr + off) % cfg.n_class    # 一様ランダムな誤りラベル
+        self.Xn = ff_inputs(self.Xtr, self.yneg, cfg.n_class, cfg.ff_label_rep)
+        _, self.pool_p = hard_pass(layers, self.X, cfg)
+        _, self.pool_n = hard_pass(layers, self.Xn, cfg)
+        return self.pool_p.shape[1]
+    def _fit(self, win, pool_n, Xn, seed, epochs, opt, w=None):
+        """FFロジスティック損失で窓を学習。wはサンプル別損失重み(None=一様)"""
+        cfg, theta, tau = self.cfg, self.theta, self.tau
+        def wmean(v, wb):
+            return v.mean() if wb is None else (v * wb).sum() / wb.sum()
+        def loss(idx):
+            bp = self.pool_p if idx is None else self.pool_p[idx]
+            bn = pool_n if idx is None else pool_n[idx]
+            xp = self.X if idx is None else self.X[idx]
+            xn = Xn if idx is None else Xn[idx]
+            wb = w if (w is None or idx is None) else w[idx]
+            terms = []
+            for L in win:
+                hp, hn = L(bp), L(bn)
+                terms.append(wmean(F.softplus(-(hp.sum(1) - theta) / tau), wb)
+                             + wmean(F.softplus((hn.sum(1) - theta) / tau), wb))
+                bp, bn = next_pool(hp, xp, bp, cfg), next_pool(hn, xn, bn, cfg)
+            return sum(terms) / len(terms)
+        fit(loss, len(self.pool_p), cfg, seed, epochs, opt)
+    def train(self, win, layers, d0):
+        """warmup(ランダム負例で通常学習)→ 反復フェーズ(模試→負例再マイニング→
+        重点復習)。マイニングは「模試の採点者」がいるときだけ発動: warmupありなら
+        学習途中の窓自身が採点者になれる(層1でも可)、なしは凍結プレフィックスのみ"""
+        cfg = self.cfg
         opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
-        # マイニングは「模試の採点者」がいるときだけ発動: warmupありなら学習途中の
-        # 窓自身が採点者になれる(層1でも可)、warmupなしは凍結プレフィックスのみ
         mining = cfg.ff_neg != "random" and (bool(layers) or cfg.ff_neg_warmup > 0)
         e1 = (cfg.epochs if not mining else
               max(1, int(cfg.epochs * cfg.ff_neg_warmup)) if cfg.ff_neg_warmup > 0
               else 0)
         seed_w = cfg.seed * 1000 + d0 + 1
-        if e1:  # フェーズ0: 通常学習(ランダム負例)
-            train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
-                            seed_w, e1, opt)
+        if e1:      # フェーズ0: 通常学習(ランダム負例)
+            self._fit(win, self.pool_n, self.Xn, seed_w, e1, opt)
         rem = cfg.epochs - e1
-        if mining and rem > 0:  # 反復フェーズ: 模試→再マイニング→間違いの重点復習
-            yneg_rand = yneg                        # ランダム負例のベース(不変)
+        if mining and rem > 0:
             grader = win if cfg.ff_neg_warmup > 0 else []  # 学習中の窓 or 凍結前層
             K = cfg.ff_neg_phases
             for ph in range(K):
                 ep = rem // K + (1 if ph < rem % K else 0)  # 残りをK等分
                 if ep == 0:
                     continue
-                g = ff_mine(layers, grader, Xtr, ytr, cfg)  # 模試(現在の窓で採点)
+                g = self.mine(layers, grader)           # 模試(現在の窓で採点)
                 pred = g.argmax(1)
-                wrong = pred != ytr
-                g.scatter_(1, ytr.view(-1, 1), float("-inf"))   # 正解を除外
+                wrong = pred != self.ytr
+                g.scatter_(1, self.ytr.view(-1, 1), float("-inf"))  # 正解を除外
                 hard = g.argmax(1)      # 正解以外で最尤 = いま一番騙されるラベル
                 if cfg.ff_neg == "hard":
                     yneg = hard
                 elif cfg.ff_neg == "mix":   # 最難とランダムを半々
-                    coin = (torch.rand(len(ytr), generator=gneg) < 0.5).to(ytr.device)
-                    yneg = torch.where(coin, hard, yneg_rand)
+                    coin = (torch.rand(len(self.ytr), generator=self.gneg)
+                            < 0.5).to(self.ytr.device)
+                    yneg = torch.where(coin, hard, self.yneg)
                 else:                       # review: 誤答は自分の誤答を負例に
-                    yneg = torch.where(wrong, pred, yneg_rand)
-                Xn = ff_inputs(Xtr, yneg, cfg.n_class, cfg.ff_label_rep)
-                pool_n = ff_pool(layers, Xn, cfg)
+                    yneg = torch.where(wrong, pred, self.yneg)  # 正解は通常のまま
+                Xn = ff_inputs(self.Xtr, yneg, cfg.n_class, cfg.ff_label_rep)
+                _, pool_n = hard_pass(layers, Xn, cfg)
                 # boost: 誤答サンプルの損失をB倍に傾斜(苦手問題に時間を割く)
                 w = (torch.where(wrong, float(cfg.ff_neg_boost), 1.0)
                      if cfg.ff_neg_boost != 1.0 else None)
-                train_window_ff(win, pool_p, pool_n, Xp, Xn, theta, tau, cfg,
-                                seed_w, ep, opt, w)
-        for L in win[:J]:  # 窓の先頭J層だけ離散化して凍結
+                self._fit(win, pool_n, Xn, seed_w, ep, opt, w)
+    @torch.no_grad()
+    def mine(self, layers, win):
+        """「模試」: 凍結プレフィックス(+学習途中の窓があればsoftで)を通した
+        goodness行列 [N, n_class]。負例マイニングと誤答抽出に使う"""
+        cfg = self.cfg
+        good = []
+        for c in range(cfg.n_class):
+            Xc = ff_inputs(self.Xtr, torch.full_like(self.ytr, c),
+                           cfg.n_class, cfg.ff_label_rep)
+            gs = []
+            for xc in Xc.split(8192):
+                h, pool = hard_pass(layers, xc, cfg)
+                for L in win:                    # 学習途中の窓はsoftで通す
+                    h = L(pool)
+                    pool = next_pool(h, xc, pool, cfg)
+                gs.append(h.sum(1))
+            good.append(torch.cat(gs))
+        return torch.stack(good, 1)
+    def commit(self, layers, L):
+        """FFの離散化はプール前進のみ(beginで再計算するので状態は持たない)。
+        全candidateラベル試行によるgoodnessプローブを返す"""
+        a_tr = accuracy(self.counts(layers, self.Xtr, self.ytr), self.ytr)
+        a_te = accuracy(self.counts(layers, self.Xte, self.yte), self.yte)
+        return a_tr, a_te
+    @torch.no_grad()
+    def counts(self, layers, X, y):
+        """クラス別goodness行列 [B, n_class](プローブ・推論・投票で共用)"""
+        cfg = self.cfg
+        good = []
+        for c in range(cfg.n_class):
+            Xc = ff_inputs(X, torch.full_like(y, c), cfg.n_class, cfg.ff_label_rep)
+            h, _ = hard_pass(layers, Xc, cfg)
+            good.append(h.sum(1))
+        return torch.stack(good, 1)
+
+def make_objective(Xtr, Xte, ytr, yte, cfg):
+    cls = ForwardForward if cfg.objective == "ff" else GroupSum
+    return cls(Xtr, Xte, ytr, yte, cfg)
+
+# ----------------------------- (A) greedy layer-wise -----------------------------
+def run_greedy(Xtr, Xte, ytr, yte, cfg):
+    """greedy本体(目的関数に依存しない骨格): W層の窓をsoftで学習し、先頭J層を
+    離散化・凍結して窓をスライド。プローブが頭打ちになったら深さを確定する"""
+    obj = make_objective(Xtr, Xte, ytr, yte, cfg)
+    W, J = cfg.window, cfg.commit
+    print(obj.header()
+          + (" [skip-all wiring]" if cfg.skip_all else
+             " [skip-input wiring]" if cfg.skip_input else ""))
+    layers, best_acc, best_depth, since_best = [], -1.0, 0, 0
+    t0 = time.time()
+    stop = False
+    while not stop and len(layers) < cfg.max_layers:
+        d0 = len(layers)
+        # 凍結済みプレフィックスの上にW層の窓を新規作成(スライドごとに再計画。
+        # コミットされなかったlookahead層は捨てる = receding horizon)
+        win, in_dim = [], obj.begin(layers, d0)
+        for k in range(W):
+            win.append(LogicLayer(in_dim, cfg.gates,
+                                  seed=cfg.seed * 100 + d0 + k + 1).to(cfg.device))
+            in_dim = (in_dim + cfg.gates if cfg.skip_all else
+                      obj.X.shape[1] + cfg.gates if cfg.skip_input else cfg.gates)
+        obj.train(win, layers, d0)
+        for L in win[:J]:  # 窓の先頭J層だけ離散化して凍結(HARDビット上で確定)
             layers.append(L)
-            a_tr = ff_accuracy(layers, Xtr, ytr, cfg)
-            a_te = ff_accuracy(layers, Xte, yte, cfg)
-            print(f"  layer {len(layers)}: goodness probe"
+            a_tr, a_te = obj.commit(layers, L)
+            print(f"  layer {len(layers)}: {obj.kind} probe"
                   f"  train={a_tr:.4f}  test={a_te:.4f}")
             if a_te > best_acc + 1e-4:
                 best_acc, best_depth, since_best = a_te, len(layers), 0
@@ -383,9 +364,41 @@ def run_greedy_ff(Xtr, Xte, ytr, yte, cfg):
                     break
             if len(layers) >= cfg.max_layers:
                 break
-    print(f"  greedy-FF: best goodness test acc = {best_acc:.4f} at depth {best_depth}"
-          f"  ({time.time() - t0:.0f}s)\n")
+    print(f"  {obj.tag}: best {obj.kind} test acc = {best_acc:.4f}"
+          f" at depth {best_depth}  ({time.time() - t0:.0f}s)\n")
     return layers[:best_depth], best_acc, best_depth
+
+# ----------------------------- (D) ensemble of greedy networks -----------------------------
+def run_ensemble(Xtr, Xte, ytr, yte, cfg):
+    """独立に学習したM本のネットワーク(シードのみ変える)を横に並べて投票。
+    soft vote: 各メンバーのクラス別カウント(GroupSumカウント / FF goodness)を
+               合算してargmax(groupsumでは幅M倍readoutと数学的に等価)
+    majority : 各メンバーのargmaxで多数決。同数タイは合算カウントの大きい方
+               (0.99倍で正規化したスコアを足すので票数の優劣は覆らない)"""
+    M, base_seed = cfg.ensemble, cfg.seed
+    members, member_acc, depths = [], [], []
+    for m in range(M):
+        cfg.seed = base_seed + m
+        print(f"--- ensemble member {m + 1}/{M} (seed {cfg.seed}) ---")
+        layers, acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
+        members.append(layers); member_acc.append(acc); depths.append(depth)
+    cfg.seed = base_seed
+    obj = make_objective(Xtr, Xte, ytr, yte, cfg)
+    counts = torch.stack([obj.counts(ls, Xte, yte)
+                          for ls in members])                    # [M, B, n_class]
+    soft_acc = accuracy(counts.sum(0), yte)
+    votes = F.one_hot(counts.argmax(-1), cfg.n_class).sum(0).float()
+    c = counts.sum(0)
+    t = (c - c.amin(1, keepdim=True)) / (c.amax(1, keepdim=True)
+                                         - c.amin(1, keepdim=True) + 1e-9)
+    maj_acc = accuracy(votes + 0.99 * t, yte)
+    label = "goodness" if cfg.objective == "ff" else "GroupSum"
+    print(f"=== (D) Ensemble vote over {M} members ===")
+    print(f"  member acc: {' / '.join(f'{a:.4f}' for a in member_acc)}"
+          f"  (mean {float(np.mean(member_acc)):.4f}, depths {depths})")
+    print(f"  soft vote (summed {label} counts) = {soft_acc:.4f}")
+    print(f"  majority vote (count tie-break)    = {maj_acc:.4f}\n")
+    return members, member_acc, depths, soft_acc, maj_acc
 
 # ----------------------------- (B) end-to-end baseline -----------------------------
 def run_e2e(Xtr, Xte, ytr, yte, depth, cfg):
@@ -587,7 +600,7 @@ def main():
     p.add_argument("--win-loss", choices=["last", "all"], default="last",
                    help="window training loss: CE at the last window layer only"
                         " (pure lookahead) or averaged over all window layers"
-                        " (deep supervision)")
+                        " (deep supervision). groupsum only; ff always uses all")
     p.add_argument("--objective", choices=["groupsum", "ff"], default="groupsum",
                    help="per-layer local objective: groupsum (GroupSum+CE, original)"
                         " or ff (Forward-Forward goodness = popcount on binary"
@@ -629,9 +642,6 @@ def main():
     cfg = p.parse_args()
     if not (1 <= cfg.commit <= cfg.window):
         p.error("--commit must satisfy 1 <= commit <= window")
-    if cfg.objective == "ff" and cfg.ensemble > 1:
-        p.error("--objective ff does not support --ensemble yet")
-    # FFの窓損失は常にdeep supervision(--win-lossはgroupsum専用でFFでは無視)
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
@@ -639,6 +649,11 @@ def main():
     print(f"data: {cfg.dataset}, {Xtr.shape[0]} train / {Xte.shape[0]} test,"
           f" {Xtr.shape[1]} input bits  (device={cfg.device}"
           + (f", batch={cfg.batch}" if cfg.batch else "") + ")\n")
+
+    # (FFの簡略化検証: 入力はラベル重畳込み。簡略化器が表示するaccはGroupSum
+    #  読み出しなのでFFの精度ではないが、ビット等価性の検証はそのまま有効)
+    Xte_s = (ff_inputs(Xte, yte, cfg.n_class, cfg.ff_label_rep)
+             if cfg.objective == "ff" else Xte)
 
     if cfg.ensemble > 1:
         members, member_acc, depths, soft_acc, maj_acc = run_ensemble(
@@ -649,7 +664,7 @@ def main():
                                          cfg.e2e_depth or depths[0], cfg)
         before = after = 0
         for ls in members:  # メンバーごとに簡略化+ビット等価検証
-            b, a = simplify([L.cpu() for L in ls], Xte.cpu(), yte.cpu(), cfg)
+            b, a = simplify([L.cpu() for L in ls], Xte_s.cpu(), yte.cpu(), cfg)
             before += b; after += a
         summary = {"member_hard_test_acc": [round(a, 4) for a in member_acc],
                    "member_mean": round(float(np.mean(member_acc)), 4),
@@ -663,18 +678,11 @@ def main():
         print(json.dumps(summary, indent=2))
         return
 
-    if cfg.objective == "ff":
-        layers, greedy_acc, depth = run_greedy_ff(Xtr, Xte, ytr, yte, cfg)
-    else:
-        layers, greedy_acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
+    layers, greedy_acc, depth = run_greedy(Xtr, Xte, ytr, yte, cfg)
     e2e_soft = e2e_hard = None
     if not cfg.skip_e2e:
         e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte, cfg.e2e_depth or depth, cfg)
     # simplification is pure-Python graph rewriting -> always run on CPU
-    # (FF: 入力はラベル重畳込み。表示されるaccはGroupSum読み出しなのでFFの
-    #  精度ではないが、ビット等価性の検証(identical)はそのまま有効)
-    Xte_s = (ff_inputs(Xte, yte, cfg.n_class, cfg.ff_label_rep)
-             if cfg.objective == "ff" else Xte)
     before, after = simplify([L.cpu() for L in layers], Xte_s.cpu(), yte.cpu(), cfg)
 
     summary = {"objective": cfg.objective,
