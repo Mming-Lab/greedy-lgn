@@ -13,6 +13,7 @@ Usage:
     python experiment.py --window 4 --commit 1   # receding horizon: look 4 ahead, commit 1
     python experiment.py --ensemble 4            # 4 independent nets + voting
     python experiment.py --objective ff          # Forward-Forward local objective
+    python experiment.py --objective ff --ff-struct 0.5 --ff-label-rep 1   # structured data x label wiring
     python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30   # MNIST
 
 Regression: any change to this file must keep every number in tests.py exact
@@ -47,13 +48,30 @@ def f16(fn, a, b):
             1 - a + ab, 1 - ab, a * 0 + 1][fn]
 
 class LogicLayer(nn.Module):
-    """One layer of 2-input logic gates with fixed random wiring."""
-    def __init__(self, in_dim, n_gates, seed):
+    """One layer of 2-input logic gates with fixed random wiring.
+
+    struct=(data_hi, lab_lo, lab_hi, frac, seed) で「割合fracのゲートを
+    ia=データ範囲[0,data_hi) / ib=ラベル範囲[lab_lo,lab_hi) に強制配線」する
+    構造化モード(FFのラベル×ラベル無駄ゲート対策)。主ドロー(ia/ib/logits)を
+    従来順で引いた後に別ジェネレータで一部を上書きするので、struct=None または
+    frac=0 のとき従来とビット単位で一致する。"""
+    def __init__(self, in_dim, n_gates, seed, struct=None):
         super().__init__()
         g = torch.Generator().manual_seed(seed)
-        self.register_buffer("ia", torch.randint(0, in_dim, (n_gates,), generator=g))
-        self.register_buffer("ib", torch.randint(0, in_dim, (n_gates,), generator=g))
-        self.logits = nn.Parameter(torch.randn(n_gates, 16, generator=g))
+        ia = torch.randint(0, in_dim, (n_gates,), generator=g)
+        ib = torch.randint(0, in_dim, (n_gates,), generator=g)
+        logits = torch.randn(n_gates, 16, generator=g)
+        if struct is not None:
+            data_hi, lab_lo, lab_hi, frac, sseed = struct
+            k = int(round(n_gates * frac))
+            if k > 0 and data_hi > 0 and lab_hi > lab_lo:
+                gs = torch.Generator().manual_seed(sseed)   # 主ドローと独立
+                pos = torch.randperm(n_gates, generator=gs)[:k]  # 構造化するゲート
+                ia[pos] = torch.randint(0, data_hi, (k,), generator=gs)
+                ib[pos] = torch.randint(lab_lo, lab_hi, (k,), generator=gs)
+        self.register_buffer("ia", ia)
+        self.register_buffer("ib", ib)
+        self.logits = nn.Parameter(logits)
     def forward(self, x):  # soft (training) mode
         return (all16(x[:, self.ia], x[:, self.ib])
                 * F.softmax(self.logits, -1)).sum(-1)
@@ -148,6 +166,9 @@ class GroupSum:
                    if cfg.window > 1 else ""))
     def begin(self, layers, d0):   # 窓学習の準備。窓の入力次元を返す
         return self.pool_tr.shape[1]
+    def make_layer(self, in_dim, d0, k):   # groupsumは常に素のランダム配線
+        return LogicLayer(in_dim, self.cfg.gates,
+                          seed=self.cfg.seed * 100 + d0 + k + 1)
     def train(self, win, layers, d0):
         """窓内W層をsoftのまま共同学習(receding horizonの1ステップ)。
         損失は窓の最終層のCE(--win-loss last)か全層平均(--win-loss all)。
@@ -210,6 +231,7 @@ class ForwardForward:
     def header(self):
         cfg = self.cfg
         return ("=== (A') Greedy layer-wise, Forward-Forward objective ==="
+                + (f" [struct={cfg.ff_struct}]" if cfg.ff_struct > 0 else "")
                 + (f" [window={cfg.window} commit={cfg.commit}]"
                    if cfg.window > 1 else "")
                 + (f" [neg={cfg.ff_neg}"
@@ -228,6 +250,18 @@ class ForwardForward:
         _, self.pool_p = hard_pass(layers, self.X, cfg)
         _, self.pool_n = hard_pass(layers, self.Xn, cfg)
         return self.pool_p.shape[1]
+    def make_layer(self, in_dim, d0, k):
+        """最初の層(d0==0,k==0)だけ、--ff-struct>0 なら割合fのゲートを
+        データ×ラベルに強制配線する。ラベルは入力の末尾に重畳されているので
+        ラベル範囲は [Xtr幅, in_dim)。深い層はプールにラベルが無いので素のまま
+        (層内のラベルアクセスは特徴経由になる = A案。各層再露出のB案は未実装)"""
+        cfg = self.cfg
+        seed = cfg.seed * 100 + d0 + k + 1
+        if d0 == 0 and k == 0 and cfg.ff_struct > 0:
+            data_hi = self.Xtr.shape[1]     # ラベル重畳前のデータ次元
+            struct = (data_hi, data_hi, in_dim, cfg.ff_struct, cfg.seed * 300 + 1)
+            return LogicLayer(in_dim, cfg.gates, seed, struct)
+        return LogicLayer(in_dim, cfg.gates, seed)
     def _fit(self, win, pool_n, Xn, seed, epochs, opt, w=None):
         """FFロジスティック損失で窓を学習。wはサンプル別損失重み(None=一様)"""
         cfg, theta, tau = self.cfg, self.theta, self.tau
@@ -344,8 +378,7 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
         # コミットされなかったlookahead層は捨てる = receding horizon)
         win, in_dim = [], obj.begin(layers, d0)
         for k in range(W):
-            win.append(LogicLayer(in_dim, cfg.gates,
-                                  seed=cfg.seed * 100 + d0 + k + 1).to(cfg.device))
+            win.append(obj.make_layer(in_dim, d0, k).to(cfg.device))
             in_dim = (in_dim + cfg.gates if cfg.skip_all else
                       obj.X.shape[1] + cfg.gates if cfg.skip_input else cfg.gates)
         obj.train(win, layers, d0)
@@ -629,6 +662,12 @@ def main():
     p.add_argument("--ff-label-rep", type=int, default=1,
                    help="replicate the 10 overlaid label bits this many times so"
                         " random wiring actually samples them (ff objective only)")
+    p.add_argument("--ff-struct", type=float, default=0.0,
+                   help="fraction of the FIRST layer's gates forced to wire"
+                        " data x label (one input from the data bits, one from the"
+                        " label bits) instead of relying on label replication; kills"
+                        " the wasted label x label gates. 0 = off. ff objective only;"
+                        " works with --ff-label-rep 1 since access is guaranteed")
     p.add_argument("--ensemble", type=int, default=1,
                    help="train ENSEMBLE independent greedy networks (seeds seed.."
                         "seed+M-1) side by side and report soft-vote / majority-vote"
