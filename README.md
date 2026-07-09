@@ -62,6 +62,26 @@ Plain local training loses ~5 pt of accuracy to backprop — in exchange for zer
 
 For reference, end-to-end backprop at equal *training memory* averages 91.5% on digits — the best stack is above it, though it spends more inference-circuit area to get there. Every number here is honest about its cost; the [experiments below](#all-experiments-details-in-resultsmd) spell out which levers stack and which turned out to be dead ends.
 
+## Ideas at a fixed budget vs. spending compute
+
+The levers split into two kinds, worth keeping apart:
+
+- **Scaling levers** — wider layers (`--gates`) and ensembles (`--ensemble`). These just spend more compute / inference-circuit area, and reliably buy accuracy. They got the headline 96.4% / 90.9% above, but they don't tell you which *idea* is any good.
+- **Fixed-budget ideas** — algorithmic changes that cost (almost) nothing extra. To compare *these* fairly, hold everything at **500 gates/layer, single network** and see which idea moves the points:
+
+| idea (500 gates, single net) | digits (3 seeds) | MNIST |
+|---|---|---|
+| plain greedy (GroupSum + CE) | 88.4% | 74.3% |
+| + skip-input (`--skip-input`) | 89.1% | —¹ |
+| + windowed lookahead (`--window 2 --commit 2`) | **90.4%** | 76.6% |
+| Forward-Forward objective (`--objective ff`) | 86.0% | 76.8% |
+| FF + window | 88.0% | 78.2% |
+| FF + window + hard-negative mining (`--ff-neg`) | 89.7%² | **82.0%³** |
+
+¹ skip alone is a depth/width-synergy lever — modest at 500-gate single net, and it actively *hurts* FF, so it isn't a fixed-budget winner. ² `mix` negatives. ³ `review` + 0.5 warm-up.
+
+**The winner depends on the judge.** On digits (near its ceiling, so barely discriminating) windowed lookahead on GroupSum tops it at 90.4%. On MNIST — the more discriminating dataset, and the one we trust when the two disagree — the **Forward-Forward stack wins clearly at 82.0%** (+7.7 pt over plain greedy), with FF and windowed lookahead each being the strongest *single* idea (~+2.5 pt) and compounding. Notably, all three of these fixed-budget ideas — FF, lookahead, and "review your mistakes" negative mining — came out of just messing around; skip and the scaling levers are the borrowed/obvious ones.
+
 ## All experiments (details in [RESULTS.md](RESULTS.md))
 
 | experiment | headline | details |
@@ -147,6 +167,8 @@ MIT
 > **論文も読まない素人がAIと壁打ちしながらのお遊びです。** AIとアイデアを出し合って、実験して、精度(ポイント)の変化を楽しんでいるだけです。査読も受けていませんし、文献調査もAIに聞いた程度なので、新規性や優先権は一切主張しません。ここにあるアイデアの多くは、私が知らない名前で既に存在しているはずです。再現できる遊びのログとして読んでください。もし既存研究と重複していたら、それが普通です — issueで教えてもらえると助かります。
 
 この遊びの現在地(始点→ベスト、いずれもハード回路のテスト精度・離散化ギャップは常に構造的ゼロ): **digits 88.2% → 96.4%**(2,000ゲート+skip+×4アンサンブル多数決)、**MNIST 74.3% → 90.9%**(4,000ゲート+skip+×4アンサンブル soft vote)。以下はそこに至るまでにどのレバーが積み上がり、どれが死にレバーだったかの記録です。
+
+レバーは2種類に分けられます: **スケーリングレバー**(幅=`--gates` とアンサンブル=`--ensemble`。計算資源=推論回路面積を突っ込んで精度を買う。上記ベストの原動力だが「アイデアの良し悪し」は分からない)と、**予算固定のアイデア**(追加コストほぼゼロのアルゴリズム的工夫)。後者を**500ゲート・単発ネット**に揃えて公平に比べると、MNISTを審判にした場合の最優秀は「**FF + 先読み窓 + 誤答の重点復習(負例マイニング)= 82.0%**」(素の74.3%から+7.7pt)。digits(天井で判定力なし)だと先読み窓のgroupsum(90.4%)が勝つが、食い違ったらMNISTを信じる方針です。詳細な表は英語本文の「Ideas at a fixed budget vs. spending compute」を参照。
 
 結果は正直に言って一長一短です: 素のgreedyはend-to-end逆伝播に約5pt負けますが(88.2% vs 93.6%)、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定という利点があります。その5ptの内訳を潰していくのが各実験です — **メモリ等価**(幅4倍でe2eと同じfloat予算)ではgreedyが3シード全勝(95.0% vs 91.5%)、**skip connections**(`--skip-input`)で初めて深さが精度に貢献、**MNIST**でも同じ構図が再現(84.6% vs 80.1%)、**先読み窓**(`--window 2`: 2層先まで逆伝播で共同学習してからまとめて離散化)で近視由来のギャップの約2/3を回収(90.4% vs 91.5%)、**アンサンブル投票**(`--ensemble M`: 独立学習した離散回路を横に並べて投票 — 並列評価なのでレイテンシ不変、投票回路込みで純粋な論理回路のまま)は他の全レバーと加算され、digitsで**96.4%**(自己ベスト)、MNISTでは4×500ゲートが単発2,000ゲートの従来ベストを半分の学習メモリで上回ります(84.7% vs 84.6%)。MNISTのスケーリングでは幅が支配的レバーで(4,000ゲート単発89.8%)、アンサンブル併用の**90.9%**で初めて90%を超えました(エポック増とwindow×幅は各+0.1ptで死にレバーと確認)。**Forward-Forward目的関数**(`--objective ff`: goodnessがバイナリ層ではpopcountになり、推論まで含めて純論理回路)は digits では教師ありローカルCEに2.4pt負けますが、**MNISTでは+2.5pt逆転**(76.8%)し、skipなしで初めて深さ17層を精度に変換しました(ランダム配線がラベルを見られるようにするラベルビット複製が必須という発見つき)。逆伝播は12層でチャンスレベルに崩壊する一方、greedyは40層目でも学習が成立します。
 
