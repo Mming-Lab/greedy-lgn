@@ -437,9 +437,32 @@ Findings:
       and 88.0% → **89.7%** on top of the W=2 window (90.0/88.0/91.1 over seeds) —
       the FF stack now *surpasses plain GroupSum* (88.4%) and closes on
       GroupSum×window (90.4%).
-    - **No gain on MNIST** (77.9% vs 78.2% with random negatives, within noise). A
-      consistent reading: mining pays once random negatives are mostly solved (digits
-      sits near its ceiling), while at 78% on MNIST random wrong labels still
-      generate plenty of loss — the curriculum has nothing to prioritize yet.
+    - **No gain on MNIST from prefix-mined negatives** (77.9% vs 78.2% with random,
+      within noise). At the time I read this as "MNIST has nothing to mine yet" — but
+      finding 11 shows the real cause was mining *quality*, not MNIST.
 
-Full run log and the window / negative-mining follow-ups: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
+11. **Warm-up before mining rescues hard negatives, and moves MNIST a lot
+    (`--ff-neg-warmup`, `--ff-neg review`).** Two ideas from the same "how humans
+    study" intuition: (a) don't mine from an untrained network — train each layer on
+    random negatives for the first half of its epochs, *then* let the partly-trained
+    layer itself sit the mock exam and mine its own mistakes; (b) `review` mode: the
+    samples it got wrong study their own wrong answer, the ones it got right stay
+    random (so the negative set never collapses to a few labels).
+    - **Warm-up un-breaks pure hard negatives**: the collapse in finding 10 was mining
+      from a layer that hadn't learned yet. With a 0.5 warm-up, pure `hard` on digits
+      goes from 32% (dead at layer 1) to **88.0%** — a healthy run.
+    - **Digits (at its ceiling) barely moves**: 3-seed means over the W=2 window are
+      mix 89.7 / review-warmup 88.9 / hard-warmup 87.9 — plain prefix-mined mix still
+      edges it. No new digits record.
+    - **MNIST moves a lot**: `review` + 0.5 warm-up reaches **82.0% at depth 15**, up
+      from 78.2% with random negatives (+3.8 pt) and from 77.9% with prefix-mined mix
+      (+4.1 pt); pure `hard` + warm-up gets 80.5%. This is the best 500-gate single-net
+      MNIST result in the repo, across every objective.
+    - **The two-tier reading**: the earlier "MNIST is unmoved" was wrong — the mining
+      was just low-quality (mining from a frozen prefix that is itself only ~75%
+      accurate, several layers back). Letting the current layer grade its own mock exam
+      fixes the quality, and MNIST responds strongly. This is also a clean example of
+      why digits (near ceiling, insensitive) and MNIST (sensitive) can disagree: an
+      idea that looks flat on digits can be a clear win on MNIST.
+
+Full run log and the window / negative-mining / warm-up follow-ups: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
