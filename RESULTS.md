@@ -495,4 +495,6 @@ Findings:
       of the human-study analogy — warm up, one mock exam, review your own wrong
       answers — appears to be the whole effect.
 
-Full run log and the window / negative-mining / warm-up / iterated-exam follow-ups: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
+13. **Structured wiring (`--ff-struct`) replaces the label-replication hack at equal accuracy — cleaner, not stronger.** digits (3 seeds, review-warmup W=2 stack, rep 1): f=0 collapses (66.4%, no label access), then monotone 0.25=82.4 / 0.5=86.7 / 0.75=88.7 / **1.0=90.3%**, beating the rep-38 force (88.9%) by +1.4 pt. At f=1.0/rep1 each gate detects one (feature, class) pair — a per-class feature bank the window's 2nd layer combines. **MNIST is a tie, not a win**: f=1.0 rep1 = 81.9% vs 82.0% for rep-470, within noise. The digits gain was a ceiling artifact. Verdict: structured wiring buys the same accuracy with a tiny pool (10 vs 4,700 label bits) and zero wasted gates, but is not itself an accuracy lever — its value is as the base for a repeating structured block (labels re-injected every block; future work).
+
+Full run log and the window / negative-mining / warm-up / iterated-exam / structured-wiring follow-ups: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
