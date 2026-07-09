@@ -465,4 +465,22 @@ Findings:
       why digits (near ceiling, insensitive) and MNIST (sensitive) can disagree: an
       idea that looks flat on digits can be a clear win on MNIST.
 
-Full run log and the window / negative-mining / warm-up follow-ups: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
+12. **Iterated mock exams and hard-sample boosting do NOT help — one exam is
+    enough (`--ff-neg-phases`, `--ff-neg-boost`; hypothesis disproved).** Two
+    natural extensions of finding 11's study analogy: re-take the mock exam
+    several times per layer (re-mining fresher negatives each phase), and weight
+    the loss of currently-misclassified samples higher. Both implemented (K=1 /
+    B=1 reproduce finding 11 bit-exactly), both fail:
+    - digits (3 seeds, on the review-warmup W=2 stack): all variants land in a
+      flat 88.5–89.0% band — no signal, as expected at digits' ceiling.
+    - MNIST (same stack, reference 82.03%): phases=3 → 81.3% (−0.7), boost=2 →
+      81.0% (−1.0), both combined → **77.5% (−4.5, with a visibly unstable
+      layer-to-layer curve)**.
+    - Speculation, labelled as such: one exam already gives each mistaken sample
+      its personally hardest negative, so re-mining mostly reshuffles the same
+      set while cutting each phase's epochs; and boosting double-weights samples
+      that `review` has already concentrated the negatives on. The clean version
+      of the human-study analogy — warm up, one mock exam, review your own wrong
+      answers — appears to be the whole effect.
+
+Full run log and the window / negative-mining / warm-up / iterated-exam follow-ups: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
