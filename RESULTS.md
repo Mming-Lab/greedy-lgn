@@ -272,11 +272,12 @@ by the pinned regression suite (`tests.py`). Voting now sums exact integer count
 (mathematically the same argmax, deterministic on every device); members and
 majority votes were unaffected. Corrected values are the deterministic ones.
 
-MNIST (500 gates/layer, `--batch 4096 --epochs 30`, seeds 1–4):
+MNIST (500 gates/layer, `--batch 4096 --epochs 30`, seeds 1–4; soft votes are the
+corrected integer-count values, see footnote 1):
 
 | config | member mean | soft vote | majority vote |
 |---|---|---|---|
-| plain ×4 | 74.5% | **82.9%** | 81.9% |
+| plain ×4 | 74.5% | **83.0%** | 82.0% |
 | W=2 blocks ×4 | 77.3% | **84.7%** | 83.9% |
 
 Findings:
@@ -318,11 +319,15 @@ temporaries inside 6 GB at 4,000+ gates.
 | config | hard test acc | runtime |
 |---|---|---|
 | 2,000 gates (first-pass best, for reference) | 84.6% | ~7 min |
-| 2,000 gates ×4 ensemble, soft vote | 87.3% | ~15 min |
+| 2,000 gates ×4 ensemble, soft vote | 87.3%¹ | ~15 min |
 | 2,000 gates + W=2 blocks (single) | 84.7% | ~5 min |
 | 4,000 gates (single) | 89.8% (depth 7) | ~8 min |
 | 4,000 gates, 2× epochs (single) | 89.9% | ~15 min |
-| **4,000 gates ×4 ensemble, soft vote** | **90.9%** | ~28 min |
+| **4,000 gates ×4 ensemble, soft vote** | **90.9%¹** | ~28 min |
+
+¹ Ensemble soft votes are the corrected exact-integer-count values (see the
+[ensemble-voting footnote](#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever));
+the originally posted figures were 87.34% / 90.86%, off by ≤0.05 pt.
 
 Findings:
 
@@ -331,8 +336,8 @@ Findings:
    other lever at this scale. Simplification keeps ~42–45% of gates (28,000 → 12,517
    at 4,000 gates), bit-exact as always.
 2. **Ensembling stacks at every width, with diminishing returns as members
-   strengthen**: the ×4 vote adds +8.4 pt at 500 gates, +3.2 pt at 2,000, +1.1 pt at
-   4,000. Combined best: **90.86%** (4 × 4,000 + skip, soft vote) — the repo's first
+   strengthen**: the ×4 vote adds +8.5 pt at 500 gates, +3.2 pt at 2,000, +1.3 pt at
+   4,000. Combined best: **90.90%** (4 × 4,000 + skip, soft vote) — the repo's first
    crossing of 90% on MNIST.
 3. **Two levers confirmed dead at this scale, reported honestly**: doubling epochs
    adds +0.1 pt (89.77% → 89.89%), and windowed lookahead on top of width+skip adds
