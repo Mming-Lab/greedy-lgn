@@ -6,6 +6,8 @@
 
 Proof-of-concept. Runs on CPU in a few minutes. ~400 lines, no dependencies beyond `torch` and `scikit-learn`.
 
+> **Just me playing around, not research.** I don't read papers — I bounce ideas off an AI assistant, run the experiments, and enjoy watching the accuracy points move. That's the whole thing. Nothing here is peer-reviewed, and the only "literature search" was asking the AI, so I make **no novelty or priority claims**. Plenty of these ideas probably already exist under names I don't know. Read it as a reproducible playground log, not a contribution; if it duplicates prior work, that's expected — pointers are welcome via an issue.
+
 ## Why
 
 [Differentiable Logic Gate Networks (LGNs)](https://github.com/Felix-Petersen/difflogic) learn circuits of 2-input logic gates by relaxing gate choice to a softmax over 16 Boolean functions. They achieve extremely fast, DSP-free inference on FPGAs. But training them end-to-end with backpropagation has three known pain points:
@@ -99,21 +101,21 @@ python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --ga
 - [ ] Simplify *between* growth steps (currently done once at the end) and rewire the next layer to the simplified circuit.
 - [ ] Export simplified circuits to Verilog / run through ABC for comparison with proper logic synthesis.
 
-## What is new here — and what is not
+## What this borrows, and what it puts together
 
-Being explicit about the boundary, because most ingredients of this repo are borrowed. The **single novel primitive** is:
+Almost every ingredient here is from prior work — this section is about being explicit, not claiming credit. The whole repo is organized around one simple recipe:
 
 > *Train one logic layer with a local loss, discretize it immediately, freeze it, and train the next layer on the real 0/1 bits.*
 
-Everything this repo claims either derives from that primitive or is inherited from prior work:
+I have **not** surveyed the literature and don't claim this recipe — or any piece of it — is new; it may well exist already. What I can say concretely about each piece, without any novelty claim:
 
-| property | status |
+| property | where it comes from |
 |---|---|
-| No multipliers / DSPs / floats; maps to FPGA LUTs | **Inherited** from LGNs ([difflogic](https://github.com/Felix-Petersen/difflogic)) — not our contribution, just the platform. |
-| **Zero discretization gap** | **Direct consequence of the primitive.** Within the LGN literature we find no precedent (as of mid-2026) for a training procedure in which the gap is structurally zero rather than minimized after the fact. Precise claim: not "the first verified-equals-deployed network" (exact-by-construction routes exist outside LGNs, e.g. LogicNets' truth-table enumeration), but *an LGN that stays bit-exact throughout training*. |
-| Training memory = one layer, not depth | **Not unique** — any greedy layer-wise scheme (Cascade-Correlation, Forward-Forward) has this. What *is* unique is its intersection with bit-exactness: frozen layers could be burned to an FPGA and the next layer trained on the physical chip's outputs (**hardware-in-the-loop growth**). Backprop cannot do this (gradients don't cross silicon); continuous-activation local methods can't either (chip outputs ≠ training-time activations). Currently a possibility, not a demonstrated result. |
-| Adaptive depth / grow-and-freeze | **Cascade-Correlation heritage (1990)** — not new as an idea. Grounding it in circuits adds one genuinely new reading: since circuit depth = critical-path latency, stopping at the accuracy plateau automatically yields a *minimum-latency* circuit for that accuracy. Post-deployment growth (adding layers onto a frozen deployed circuit) is likewise possible in principle — but our own depth-stress data shows added depth only pays off with skip wiring, so we treat it as speculative. |
-| Windowed lookahead (`--window`) | **Block-wise greedy training exists** (Belilovsky et al., 2019, with auxiliary heads). What is added here: the blocks are discretized and frozen as they are committed (bit-exact prefix preserved), depth stays adaptive, and the overlap ablation (commit < window, receding-horizon style) is reported — including the negative result that overlap does not beat plain blocks. |
+| No multipliers / DSPs / floats; maps to FPGA LUTs | **Inherited** from LGNs ([difflogic](https://github.com/Felix-Petersen/difflogic)) — not mine, just the platform. |
+| **Zero discretization gap** | Follows directly from the recipe (each layer is discretized before the next trains, so the reported accuracy *is* the hard circuit's). I haven't seen this exact setup in the few LGN papers I've looked at, but I haven't searched properly — take that as ignorance, not a claim. Not "the first verified-equals-deployed network" either (exact-by-construction routes exist outside LGNs, e.g. LogicNets' truth-table enumeration). |
+| Training memory = one layer, not depth | **Not special** — any greedy layer-wise scheme (Cascade-Correlation, Forward-Forward) has this. The part I found fun is its intersection with bit-exactness: frozen layers could in principle be burned to an FPGA and the next layer trained on the physical chip's outputs (**hardware-in-the-loop growth**). Just a thought, not something I've demonstrated. |
+| Adaptive depth / grow-and-freeze | **Cascade-Correlation heritage (1990)** — old idea. One reading I liked: since circuit depth = critical-path latency, stopping at the accuracy plateau happens to give a low-latency circuit for that accuracy. Post-deployment growth is likewise possible in principle, but my own depth-stress data shows added depth only pays off with skip wiring, so treat it as hand-waving. |
+| Windowed lookahead (`--window`) | **Block-wise greedy training exists** (Belilovsky et al., 2019, with auxiliary heads). What I added on top: the blocks are discretized and frozen as they're committed (bit-exact prefix preserved), depth stays adaptive, and I report the overlap ablation (commit < window) — including the negative result that overlap doesn't beat plain blocks. |
 
 ## Related work
 
@@ -123,7 +125,7 @@ Everything this repo claims either derives from that primitive or is inherited f
 - [The Forward-Forward Algorithm](https://arxiv.org/abs/2212.13345) (Hinton, 2022)
 - Cascade-Correlation (Fahlman & Lebiere, 1990) — the original "grow and freeze" network
 - Greedy layerwise learning can scale to ImageNet (Belilovsky et al., ICML 2019) — block-wise greedy training with auxiliary heads, the closest relative of `--window`
-- To our knowledge, **the combination** (LGN × backprop-free layer-wise training × adaptive depth × incremental simplification) has no published precedent as of mid-2026. If you know of one, please open an issue.
+- **I have not done a proper literature search** (just asked an AI), so I make no claims about what is or isn't new. This combination — or any part of it — may already exist under names I don't know; if you know of prior work, please open an issue so I can point to it.
 
 ## License
 
@@ -135,8 +137,10 @@ MIT
 
 論理ゲートネットワーク(DLGN)を**逆伝播なしで1層ずつ**学習する実証実験です。各層をローカルな損失(GroupSum+交差エントロピー)で学習したら**即座に離散化して凍結**し、次の層は本物の0/1ビットの上で学習します。検証精度が頭打ちになったら層の追加を止めるため、深さは自動決定されます。学習後に回路を簡略化し、出力が完全に同一であることをビット単位で検証します。
 
+> **論文も読まない素人がAIと壁打ちしながらのお遊びです。** AIとアイデアを出し合って、実験して、精度(ポイント)の変化を楽しんでいるだけです。査読も受けていませんし、文献調査もAIに聞いた程度なので、新規性や優先権は一切主張しません。ここにあるアイデアの多くは、私が知らない名前で既に存在しているはずです。再現できる遊びのログとして読んでください。もし既存研究と重複していたら、それが普通です — issueで教えてもらえると助かります。
+
 結果は正直に言って一長一短です: 素のgreedyはend-to-end逆伝播に約5pt負けますが(88.2% vs 93.6%)、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定という利点があります。その5ptの内訳を潰していくのが各実験です — **メモリ等価**(幅4倍でe2eと同じfloat予算)ではgreedyが3シード全勝(95.0% vs 91.5%)、**skip connections**(`--skip-input`)で初めて深さが精度に貢献、**MNIST**でも同じ構図が再現(84.6% vs 80.1%)、**先読み窓**(`--window 2`: 2層先まで逆伝播で共同学習してからまとめて離散化)で近視由来のギャップの約2/3を回収(90.4% vs 91.5%)、**アンサンブル投票**(`--ensemble M`: 独立学習した離散回路を横に並べて投票 — 並列評価なのでレイテンシ不変、投票回路込みで純粋な論理回路のまま)は他の全レバーと加算され、digitsで**96.4%**(自己ベスト)、MNISTでは4×500ゲートが単発2,000ゲートの従来ベストを半分の学習メモリで上回ります(84.7% vs 84.6%)。MNISTのスケーリングでは幅が支配的レバーで(4,000ゲート単発89.8%)、アンサンブル併用の**90.9%**で初めて90%を超えました(エポック増とwindow×幅は各+0.1ptで死にレバーと確認)。**Forward-Forward目的関数**(`--objective ff`: goodnessがバイナリ層ではpopcountになり、推論まで含めて純論理回路)は digits では教師ありローカルCEに2.4pt負けますが、**MNISTでは+2.5pt逆転**(76.8%)し、skipなしで初めて深さ17層を精度に変換しました(ランダム配線がラベルを見られるようにするラベルビット複製が必須という発見つき)。逆伝播は12層でチャンスレベルに崩壊する一方、greedyは40層目でも学習が成立します。
 
 各実験のセットアップ・数値表・**反証された仮説**(オーバーラップコミットはブロック式に勝てない、skipはパススルーを減らさない、DenseNet式は僅かに劣る、など)は [RESULTS.md](RESULTS.md) に、生ログは実験ごとの個別issue(#1〜#7、RESULTS.mdの各セクションからリンク)にあります。
 
-新規性の境界: 本リポジトリで唯一新しいのは「**各層を学習→即離散化→凍結し、次層を本物のビット上で学習する**」という一点です。離散化ギャップゼロはその直接の帰結、ハードウェア・イン・ザ・ループ成長はその派生(未実証)、メモリ効率と適応深さはCascade-Correlation / Forward-Forward由来の借り物です。詳細は「What is new here — and what is not」を参照してください。
+位置づけ: 構成要素のほとんどは先行研究からの借り物です。全体は「**各層を学習→即離散化→凍結し、次層を本物のビット上で学習する**」という素朴なレシピで組み立てられていますが、これが新しいかどうかは分かりません(ちゃんと調べていないので既出の可能性は高いです)。離散化ギャップゼロはこのレシピの帰結、ハードウェア・イン・ザ・ループ成長はその派生(未実証の思いつき)、メモリ効率と適応深さはCascade-Correlation / Forward-Forward由来です。詳細は英語本文の「What this borrows, and what it puts together」を参照してください。
