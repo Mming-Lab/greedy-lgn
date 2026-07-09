@@ -425,4 +425,21 @@ Findings:
    whereas skip and lookahead compete for the same one. `W=1` remains bit-identical
    to plain FF (regression-checked at 86.00%).
 
-Full run log and the window-combination follow-up: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
+10. **Hard-negative mining (`--ff-neg`), motivated by how humans study — review what
+    you got wrong**: instead of a uniformly random wrong label, mine the wrong label
+    the frozen prefix currently finds most plausible, re-selected every time a layer
+    freezes (a per-layer curriculum; layer 1 stays random). Costs nothing — the
+    goodness matrix is already computed for the training probe. Three sub-findings:
+    - **Pure hard negatives collapse** (32–65% on digits, dead by layer 1–2) — the
+      negative distribution gets too narrow, consistent with hard-negative
+      instability in the contrastive-learning literature.
+    - **A 50/50 mix of hard and random works**: digits 86.0% → 88.1% (W=1, +2.1 pt)
+      and 88.0% → **89.7%** on top of the W=2 window (90.0/88.0/91.1 over seeds) —
+      the FF stack now *surpasses plain GroupSum* (88.4%) and closes on
+      GroupSum×window (90.4%).
+    - **No gain on MNIST** (77.9% vs 78.2% with random negatives, within noise). A
+      consistent reading: mining pays once random negatives are mostly solved (digits
+      sits near its ceiling), while at 78% on MNIST random wrong labels still
+      generate plenty of loss — the curriculum has nothing to prioritize yet.
+
+Full run log and the window / negative-mining follow-ups: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
