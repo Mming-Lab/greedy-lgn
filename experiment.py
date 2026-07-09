@@ -367,21 +367,27 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
     obj = make_objective(Xtr, Xte, ytr, yte, cfg)
     W, J = cfg.window, cfg.commit
     print(obj.header()
+          + (" [carry]" if cfg.carry else "")
           + (" [skip-all wiring]" if cfg.skip_all else
              " [skip-input wiring]" if cfg.skip_input else ""))
     layers, best_acc, best_depth, since_best = [], -1.0, 0, 0
     t0 = time.time()
     stop = False
+    carry = []   # --carry: コミットされなかった先読み層を次スライドへ受け継ぐ足場方式
     while not stop and len(layers) < cfg.max_layers:
         d0 = len(layers)
         # 凍結済みプレフィックスの上にW層の窓を新規作成(スライドごとに再計画。
         # コミットされなかったlookahead層は捨てる = receding horizon)
         win, in_dim = [], obj.begin(layers, d0)
         for k in range(W):
-            win.append(obj.make_layer(in_dim, d0, k).to(cfg.device))
+            if k < len(carry):
+                win.append(carry[k])   # 受け継いだ層(重み保持、no-skipでin_dim=G一致)
+            else:
+                win.append(obj.make_layer(in_dim, d0, k).to(cfg.device))
             in_dim = (in_dim + cfg.gates if cfg.skip_all else
                       obj.X.shape[1] + cfg.gates if cfg.skip_input else cfg.gates)
         obj.train(win, layers, d0)
+        carry = win[J:] if cfg.carry else []
         for L in win[:J]:  # 窓の先頭J層だけ離散化して凍結(HARDビット上で確定)
             layers.append(L)
             a_tr, a_te = obj.commit(layers, L)
@@ -630,6 +636,11 @@ def main():
     p.add_argument("--commit", type=int, default=1,
                    help="layers discretized+frozen per window slide (1..WINDOW;"
                         " commit=window = non-overlapping block greedy)")
+    p.add_argument("--carry", action="store_true",
+                   help="growing-scaffold window: instead of discarding the"
+                        " uncommitted lookahead layers each slide, carry their"
+                        " trained weights into the next window (warm-start). Lets"
+                        " layers keep growing across slides. no-skip only")
     p.add_argument("--win-loss", choices=["last", "all"], default="last",
                    help="window training loss: CE at the last window layer only"
                         " (pure lookahead) or averaged over all window layers"
@@ -681,6 +692,8 @@ def main():
     cfg = p.parse_args()
     if not (1 <= cfg.commit <= cfg.window):
         p.error("--commit must satisfy 1 <= commit <= window")
+    if cfg.carry and (cfg.skip_input or cfg.skip_all):
+        p.error("--carry is no-skip only (carried layers assume constant in_dim)")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
