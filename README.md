@@ -41,9 +41,9 @@ input bits ──► [train layer 1 (soft, local GroupSum loss)]
 - After training, a simplification pass (constant folding → pass-through/NOT reduction → duplicate merge → dead-gate elimination) shrinks the circuit and is **verified to be bit-exact** against the original.
 - Optional extensions, all off by default: `--skip-input` (re-expose input bits to every layer's wiring pool), `--window W --commit J` (train W layers ahead with backprop bounded to the window, freeze J at a time).
 
-## Headline result
+## The arena: 500 gates/layer, one network
 
-The starting point, on `sklearn` digits (8×8, thermometer-binarized to 192 bits), 500 gates/layer, CPU:
+Everything on the main track runs at a **fixed budget — 500 gates/layer, single network** — because the game here is watching which *ideas* move the accuracy points, not how much compute gets spent. The starting point, on `sklearn` digits (8×8, thermometer-binarized to 192 bits), CPU:
 
 | | greedy (this repo) | end-to-end backprop |
 |---|---|---|
@@ -53,21 +53,7 @@ The starting point, on `sklearn` digits (8×8, thermometer-binarized to 192 bits
 | float logits held during training | **8,000 (one layer)** | 32,000 (×4) |
 | circuit after simplification | 2,000 → **1,316 gates (65.8%)**, bit-identical | — |
 
-Plain local training loses ~5 pt of accuracy to backprop — in exchange for zero discretization gap, ~1/depth training memory, automatic depth, and a simplifiable circuit. The fun of this playground is watching the accuracy points move as the levers below get stacked. Where they end up (hard-circuit test accuracy, discretization gap still structurally zero throughout):
-
-| | plain greedy (start) | best stack so far | how |
-|---|---|---|---|
-| **digits** | 88.2% | **96.4%** | 2,000 gates + `--skip-input`, ×4 ensemble (majority vote) |
-| **MNIST** | 74.3% | **90.9%** | 4,000 gates + `--skip-input`, ×4 ensemble (soft vote) |
-
-For reference, end-to-end backprop at equal *training memory* averages 91.5% on digits — the best stack is above it, though it spends more inference-circuit area to get there. Every number here is honest about its cost; the [experiments below](#all-experiments-details-in-resultsmd) spell out which levers stack and which turned out to be dead ends.
-
-## Ideas at a fixed budget vs. spending compute
-
-The levers split into two kinds, worth keeping apart:
-
-- **Scaling levers** — wider layers (`--gates`) and ensembles (`--ensemble`). These just spend more compute / inference-circuit area, and reliably buy accuracy. They got the headline 96.4% / 90.9% above, but they don't tell you which *idea* is any good.
-- **Fixed-budget ideas** — algorithmic changes that cost (almost) nothing extra. To compare *these* fairly, hold everything at **500 gates/layer, single network** and see which idea moves the points:
+Plain local training loses ~5 pt of accuracy to backprop — in exchange for zero discretization gap, ~1/depth training memory, automatic depth, and a simplifiable circuit. From that start, the idea ladder so far (hard-circuit test accuracy, gap still structurally zero throughout):
 
 | idea (500 gates, single net) | digits (3 seeds) | MNIST |
 |---|---|---|
@@ -80,35 +66,57 @@ The levers split into two kinds, worth keeping apart:
 
 ¹ skip alone is a depth/width-synergy lever — modest at 500-gate single net, and it actively *hurts* FF, so it isn't a fixed-budget winner. ² `mix` negatives. ³ `review` + 0.5 warm-up.
 
-**The winner depends on the judge.** On digits (near its ceiling, so barely discriminating) windowed lookahead on GroupSum tops it at 90.4%. On MNIST — the more discriminating dataset, and the one we trust when the two disagree — the **Forward-Forward stack wins clearly at 82.0%** (+7.7 pt over plain greedy), with FF and windowed lookahead each being the strongest *single* idea (~+2.5 pt) and compounding. Notably, all three of these fixed-budget ideas — FF, lookahead, and "review your mistakes" negative mining — came out of just messing around; skip and the scaling levers are the borrowed/obvious ones.
+**The winner depends on the judge.** On digits (near its ceiling, so barely discriminating) windowed lookahead on GroupSum tops it at 90.4%. On MNIST — the more discriminating dataset, and the one trusted when the two disagree — the **Forward-Forward stack wins clearly at 82.0%** (+7.7 pt over plain greedy), with FF and windowed lookahead each being the strongest *single* idea (~+2.5 pt) and compounding.
+
+## Off the main track: scaling levers (reference)
+
+Wider layers (`--gates`) and ensembles of independent nets (`--ensemble`) are a different kind of lever: they spend compute and inference-circuit area, and reliably buy accuracy — but they don't tell you which idea is any good, so they sit outside the fixed-budget arena. For reference, where they take the same pipeline:
+
+| | plain greedy (start) | best with scaling | how |
+|---|---|---|---|
+| **digits** | 88.2% | **96.4%** | 2,000 gates + `--skip-input`, ×4 ensemble (majority vote) |
+| **MNIST** | 74.3% | **90.9%** | 4,000 gates + `--skip-input`, ×4 ensemble (soft vote) |
+
+End-to-end backprop at equal *training memory* averages 91.5% on digits — the scaled stack is above it, at the cost of more inference area. Details: [memory-matched width](RESULTS.md#memory-matched-comparison-equal-training-memory-greedy-wins), [ensemble voting](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever), [MNIST scaling](RESULTS.md#mnist-scaling-width--ensembles-push-past-90). This track is parked; it gets revisited only when a fixed-budget winner deserves a one-off scale check.
 
 ## All experiments (details in [RESULTS.md](RESULTS.md))
+
+**Main track — fixed-budget ideas** (500 gates/layer, single net):
 
 | experiment | headline | details |
 |---|---|---|
 | Depth stress test | e2e collapses to chance at ~12 layers (vanishing gradients); greedy still learns at layer 40 | [→](RESULTS.md#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12) |
-| Memory-matched width | at equal training memory (4× wider layers), greedy **beats** e2e: 95.0% vs 91.5% mean, 3 seeds | [→](RESULTS.md#memory-matched-comparison-equal-training-memory-greedy-wins) |
-| Skip connections (`--skip-input`) | depth finally pays: peak 88.2%@4 → 90.4%@8; with 4× width 95.7% mean. DenseNet-style `--skip-all` tested, negative | [→](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth) |
-| MNIST first pass | the pattern replicates at 45× the data: memory-matched greedy+skip 84.6% vs e2e 80.1% (absolute numbers far below difflogic-scale budgets, stated honestly) | [→](RESULTS.md#mnist-the-pattern-replicates-first-pass-small-budget) |
+| Skip connections (`--skip-input`) | depth finally pays: peak 88.2%@4 → 90.4%@8. DenseNet-style `--skip-all` tested, negative. (Synergizes with width — see scaling track) | [→](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth) |
 | Windowed lookahead (`--window`) | training 2 layers ahead closes ~⅔ of the myopia gap: 90.4% vs e2e's 91.5% (3 seeds), +2.4 pt on MNIST; overlap/receding-horizon variant loses to plain blocks | [→](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap) |
-| Ensemble voting (`--ensemble`) | parallel hard circuits + vote: stacks with everything (digits **96.4% — repo best**); on MNIST 4×500-gate members beat the single 2,000-gate best (84.7% vs 84.6%) at **half the training memory**; not a substitute for direct width | [→](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever) |
-| MNIST scaling | width is the dominant lever (4,000 gates: 89.8% single) and ensembling stacks: **90.9%** with 4×4,000+skip — first crossing of 90%; more epochs and window×width confirmed dead (+0.1 pt each); 8,000 gates OOMs at 6 GB (pools, not eval temporaries) | [→](RESULTS.md#mnist-scaling-width--ensembles-push-past-90) |
-| Forward-Forward objective (`--objective ff`) | goodness = **popcount** on binary layers, so the whole FF inference is one logic circuit; 2.4 pt behind supervised local CE on digits (86.0%) but **+2.5 pt ahead on MNIST** (76.8%) — and the first lever to exploit depth (17 layers) without skip wiring; needs label-bit replication for sparse random wiring. Windowed lookahead **stacks with FF** (digits 88.0%) unlike with skip; hard-negative mining helps once you warm up before mining (`--ff-neg review --ff-neg-warmup 0.5`): flat on digits but **MNIST 78.2% → 82.0%**, the best 500-gate single net in the repo | [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
+| Forward-Forward objective (`--objective ff`) | goodness = **popcount** on binary layers, so the whole FF inference is one logic circuit; 2.4 pt behind supervised local CE on digits (86.0%) but **+2.5 pt ahead on MNIST** (76.8%) — and the first lever to exploit depth (17 layers) without skip wiring; needs label-bit replication for sparse random wiring | [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
+| FF × window, FF negative mining (`--ff-neg`) | windowed lookahead **stacks with FF** (digits 88.0%) unlike with skip; mining works once you warm up before mining (`--ff-neg review --ff-neg-warmup 0.5`): flat on digits but **MNIST 78.2% → 82.0% — the repo's best fixed-budget net**. Pure hard negatives without warm-up collapse | [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
 
-Full run logs (environment, commands, raw output): **one GitHub issue per experiment** ([#1](https://github.com/Mming-Lab/greedy-lgn/issues/1) main run … [#7](https://github.com/Mming-Lab/greedy-lgn/issues/7) windowed lookahead), linked from each [RESULTS.md](RESULTS.md) section.
+**Scaling track — reference** (width / ensembles / bigger budgets, parked):
+
+| experiment | headline | details |
+|---|---|---|
+| Memory-matched width | at equal training memory (4× wider layers), greedy **beats** e2e: 95.0% vs 91.5% mean, 3 seeds | [→](RESULTS.md#memory-matched-comparison-equal-training-memory-greedy-wins) |
+| MNIST first pass | the pattern replicates at 45× the data: memory-matched greedy+skip 84.6% vs e2e 80.1% (absolute numbers far below difflogic-scale budgets, stated honestly) | [→](RESULTS.md#mnist-the-pattern-replicates-first-pass-small-budget) |
+| Ensemble voting (`--ensemble`) | parallel hard circuits + vote: stacks with everything (digits **96.4% — repo best**); on MNIST 4×500-gate members beat the single 2,000-gate best at **half the training memory**; not a substitute for direct width | [→](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever) |
+| MNIST scaling | width is the dominant lever (4,000 gates: 89.8% single) and ensembling stacks: **90.9%** with 4×4,000+skip; more epochs and window×width confirmed dead (+0.1 pt each); 8,000 gates OOMs at 6 GB (pools, not eval temporaries) | [→](RESULTS.md#mnist-scaling-width--ensembles-push-past-90) |
+
+Full run logs (environment, commands, raw output): **one GitHub issue per experiment** ([#1](https://github.com/Mming-Lab/greedy-lgn/issues/1) main run … [#10](https://github.com/Mming-Lab/greedy-lgn/issues/10) Forward-Forward), linked from each [RESULTS.md](RESULTS.md) section.
 
 ## Quick start
 
 ```bash
 pip install torch scikit-learn
+# main track (500 gates, single net)
 python experiment.py                                      # full run, a few min on CPU
 python experiment.py --gates 200 --epochs 30 --max-layers 3   # ~20 s smoke test
 python experiment.py --skip-e2e                           # greedy + simplification only
 python experiment.py --device cuda                        # same experiment on GPU (~10x faster)
 python experiment.py --window 2 --commit 2 --win-loss all # 2-layer lookahead blocks (+2 pt)
-python experiment.py --ensemble 4 --skip-e2e              # 4 independent nets + voting
 python experiment.py --objective ff --ff-label-rep 38 --skip-e2e   # Forward-Forward objective
-python experiment.py --device cuda --gates 2000 --skip-input --max-layers 16 --skip-e2e --ensemble 4   # best config (96.4%)
+python experiment.py --objective ff --ff-label-rep 38 --window 2 --commit 2 --ff-neg review --ff-neg-warmup 0.5 --skip-e2e   # best fixed-budget stack
+# scaling track (reference)
+python experiment.py --ensemble 4 --skip-e2e              # 4 independent nets + voting
+python experiment.py --device cuda --gates 2000 --skip-input --max-layers 16 --skip-e2e --ensemble 4   # digits best with scaling (96.4%)
 python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --gates 2000 --skip-input --max-layers 10 --skip-e2e   # MNIST (GPU recommended)
 ```
 
@@ -121,10 +129,9 @@ python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --ga
 - [x] **Windowed lookahead** — `--window 2` recovers most of the myopia deficit; window > 2 and overlapping commits don't help ([details](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap)).
 - [x] **Ensemble voting** — `--ensemble M` stacks with every other lever; repo best on digits (96.4%) and the training-memory-free path to MNIST scaling ([details](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever)).
 - [x] **MNIST scaling, first round** — width × ensembles reaches 90.9%; epochs and window×width are dead ends ([details](RESULTS.md#mnist-scaling-width--ensembles-push-past-90)).
-- [ ] MNIST absolute accuracy, next levers: 8,000-gate layers, better input binarization, convolutional wiring.
 - [x] **Forward-Forward objective** — popcount goodness works: behind supervised local CE on digits, ahead on MNIST, and exploits depth without skip wiring ([details](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist)).
-- [ ] [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses; FF × width/ensemble combinations (FF × window already tested: it stacks).
-- [ ] CIFAR-10 / larger widths, on top of [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
+- [ ] [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses; better input binarization (fixed-budget friendly).
+- [ ] *(parked, scaling track)* MNIST absolute accuracy: 8,000-gate layers (needs the pool-memory fix), FF × width/ensemble, convolutional wiring, CIFAR-10 on [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
 - [ ] Simplify *between* growth steps (currently done once at the end) and rewire the next layer to the simplified circuit.
 - [ ] Export simplified circuits to Verilog / run through ABC for comparison with proper logic synthesis.
 
@@ -166,9 +173,9 @@ MIT
 
 > **論文も読まない素人がAIと壁打ちしながらのお遊びです。** AIとアイデアを出し合って、実験して、精度(ポイント)の変化を楽しんでいるだけです。査読も受けていませんし、文献調査もAIに聞いた程度なので、新規性や優先権は一切主張しません。ここにあるアイデアの多くは、私が知らない名前で既に存在しているはずです。再現できる遊びのログとして読んでください。もし既存研究と重複していたら、それが普通です — issueで教えてもらえると助かります。
 
-この遊びの現在地(始点→ベスト、いずれもハード回路のテスト精度・離散化ギャップは常に構造的ゼロ): **digits 88.2% → 96.4%**(2,000ゲート+skip+×4アンサンブル多数決)、**MNIST 74.3% → 90.9%**(4,000ゲート+skip+×4アンサンブル soft vote)。以下はそこに至るまでにどのレバーが積み上がり、どれが死にレバーだったかの記録です。
+本線は**500ゲート/層・単発ネットの固定予算**です。この遊びの主役は「計算資源を増やさずにアイデアだけでポイントがどれだけ動くか」で、MNISTを審判にした現在の階段は **素74.3% → 先読み窓76.6% → FF76.8% → FF+窓78.2% → +誤答の重点復習 82.0%**(+7.7pt)。digits(天井で判定力なし)だと先読み窓のgroupsum(90.4%)が勝ちますが、食い違ったらMNISTを信じる方針です。詳細な表は英語本文の「The arena」を参照。
 
-レバーは2種類に分けられます: **スケーリングレバー**(幅=`--gates` とアンサンブル=`--ensemble`。計算資源=推論回路面積を突っ込んで精度を買う。上記ベストの原動力だが「アイデアの良し悪し」は分からない)と、**予算固定のアイデア**(追加コストほぼゼロのアルゴリズム的工夫)。後者を**500ゲート・単発ネット**に揃えて公平に比べると、MNISTを審判にした場合の最優秀は「**FF + 先読み窓 + 誤答の重点復習(負例マイニング)= 82.0%**」(素の74.3%から+7.7pt)。digits(天井で判定力なし)だと先読み窓のgroupsum(90.4%)が勝つが、食い違ったらMNISTを信じる方針です。詳細な表は英語本文の「Ideas at a fixed budget vs. spending compute」を参照。
+**スケーリングレバー**(幅=`--gates` とアンサンブル=`--ensemble`)は別トラック(参考)です。計算資源=推論回路面積を突っ込めば確実に精度を買えますが、アイデアの良し悪しは分かりません。参考値: **digits 88.2%→96.4%**(2,000ゲート+skip+×4多数決)、**MNIST 74.3%→90.9%**(4,000ゲート+skip+×4 soft vote)。このトラックは休止中で、固定予算で大きな当たりが出たときだけスケール確認を1本やります。
 
 結果は正直に言って一長一短です: 素のgreedyはend-to-end逆伝播に約5pt負けますが(88.2% vs 93.6%)、離散化ギャップが構造的にゼロ、学習メモリが深さ分の1、深さの自動決定という利点があります。その5ptの内訳を潰していくのが各実験です — **メモリ等価**(幅4倍でe2eと同じfloat予算)ではgreedyが3シード全勝(95.0% vs 91.5%)、**skip connections**(`--skip-input`)で初めて深さが精度に貢献、**MNIST**でも同じ構図が再現(84.6% vs 80.1%)、**先読み窓**(`--window 2`: 2層先まで逆伝播で共同学習してからまとめて離散化)で近視由来のギャップの約2/3を回収(90.4% vs 91.5%)、**アンサンブル投票**(`--ensemble M`: 独立学習した離散回路を横に並べて投票 — 並列評価なのでレイテンシ不変、投票回路込みで純粋な論理回路のまま)は他の全レバーと加算され、digitsで**96.4%**(自己ベスト)、MNISTでは4×500ゲートが単発2,000ゲートの従来ベストを半分の学習メモリで上回ります(84.7% vs 84.6%)。MNISTのスケーリングでは幅が支配的レバーで(4,000ゲート単発89.8%)、アンサンブル併用の**90.9%**で初めて90%を超えました(エポック増とwindow×幅は各+0.1ptで死にレバーと確認)。**Forward-Forward目的関数**(`--objective ff`: goodnessがバイナリ層ではpopcountになり、推論まで含めて純論理回路)は digits では教師ありローカルCEに2.4pt負けますが、**MNISTでは+2.5pt逆転**(76.8%)し、skipなしで初めて深さ17層を精度に変換しました(ランダム配線がラベルを見られるようにするラベルビット複製が必須という発見つき)。逆伝播は12層でチャンスレベルに崩壊する一方、greedyは40層目でも学習が成立します。
 
