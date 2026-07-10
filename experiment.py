@@ -99,8 +99,23 @@ def load_data(dataset="digits", seed=0):
             torch.tensor(ytr), torch.tensor(yte))
 
 # ----------------------------- training utils -----------------------------
+def _group_sizes(D, n_class):
+    # D本の出力ビットをn_class群に分割。割り切れない端数r本は先頭r群に1本ずつ配る
+    return [D // n_class + (1 if i < D % n_class else 0) for i in range(n_class)]
+
 def group_sum(h, n_class, tau):
-    return h.view(h.shape[0], n_class, -1).sum(-1) / tau
+    if h.shape[1] % n_class == 0:                       # 割り切れる=現行の高速パス
+        return h.view(h.shape[0], n_class, -1).sum(-1) / tau   # (ビット単位で従来一致)
+    return torch.stack([c.sum(1) for c in            # 端数あり: split で群ごと集計
+                        h.split(_group_sizes(h.shape[1], n_class), 1)], 1) / tau
+
+def group_mean(h, n_class):
+    # クラス別スコアを平均で集計(各ビット∈[0,1]なので mean∈[0,1]、BCE目標0/1向き)。
+    # argmaxはsumと同順なのでプローブ・推論には影響せず、BCEロス専用
+    if h.shape[1] % n_class == 0:
+        return h.view(h.shape[0], n_class, -1).mean(-1)
+    return torch.stack([c.mean(1) for c in
+                        h.split(_group_sizes(h.shape[1], n_class), 1)], 1)
 
 def accuracy(logits, y):
     return (logits.argmax(-1) == y).float().mean().item()
@@ -159,9 +174,17 @@ class GroupSum:
         self.X, self.Xte = Xtr, Xte              # 配線プールの基底(skip用)
         self.pool_tr, self.pool_te = Xtr, Xte
         self.tau = float(np.sqrt(cfg.gates / cfg.n_class))
+        # --group-residual: 凍結層のクラススコアを累積し、各層は「前層までの累積
+        # 予測」を固定オフセットに残差を埋めるよう学習(ブースティング)。累積は
+        # 全層のクラス別ビット総和 = 純論理回路のまま
+        if cfg.group_residual:
+            self.accum_tr = torch.zeros(len(ytr), cfg.n_class, device=cfg.device)
+            self.accum_te = torch.zeros(len(yte), cfg.n_class, device=cfg.device)
     def header(self):
         cfg = self.cfg
         return ("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
+                + (" [residual]" if cfg.group_residual else "")
+                + (f" [loss={cfg.group_loss}]" if cfg.group_loss != "ce" else "")
                 + (f" [window={cfg.window} commit={cfg.commit} loss={cfg.win_loss}]"
                    if cfg.window > 1 else ""))
     def begin(self, layers, d0):   # 窓学習の準備。窓の入力次元を返す
@@ -175,26 +198,43 @@ class GroupSum:
         W=1のとき従来のgreedy 1層学習と厳密に一致する"""
         cfg = self.cfg
         opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
+        def cls_loss(h, y, accum):
+            # 出力ビットをクラス群に集計してローカルロス。ce=scaled-sumをlogit扱いの
+            # cross-entropy(従来)、bce=group-mean(∈[0,1])とone-hot目標のBCE。
+            # residual時はaccum(前層までの累積スコア=固定オフセット)を足してから
+            if cfg.group_loss == "bce":
+                return F.binary_cross_entropy(group_mean(h, cfg.n_class),
+                                              F.one_hot(y, cfg.n_class).float())
+            logits = group_sum(h, cfg.n_class, self.tau)
+            return F.cross_entropy(logits if accum is None else accum + logits, y)
         def loss(idx):
             pool = self.pool_tr if idx is None else self.pool_tr[idx]
             X = self.X if idx is None else self.X[idx]
             y = self.ytr if idx is None else self.ytr[idx]
+            accum = (None if not cfg.group_residual else
+                     self.accum_tr if idx is None else self.accum_tr[idx])
             h, terms = None, []
             for L in win:
                 h = L(pool)
                 if cfg.win_loss == "all":
-                    terms.append(F.cross_entropy(
-                        group_sum(h, cfg.n_class, self.tau), y))
+                    terms.append(cls_loss(h, y, accum))
                 pool = next_pool(h, X, pool, cfg)
             return (sum(terms) / len(terms) if cfg.win_loss == "all"
-                    else F.cross_entropy(group_sum(h, cfg.n_class, self.tau), y))
+                    else cls_loss(h, y, accum))
         fit(loss, len(self.pool_tr), cfg, cfg.seed * 1000 + d0 + 1, cfg.epochs, opt)
     def commit(self, layers, L):
-        """Lを離散化・凍結してプールをHARDビットで前進。(train, test)プローブを返す"""
+        """Lを離散化・凍結してプールをHARDビットで前進。(train, test)プローブを返す。
+        residual時は累積スコアに当層の寄与を足し、プローブは累積で測る"""
         cfg = self.cfg
         h_tr, h_te = hard_batched(L, self.pool_tr), hard_batched(L, self.pool_te)
-        a_te = accuracy(group_sum(h_te, cfg.n_class, self.tau), self.yte)
-        a_tr = accuracy(group_sum(h_tr, cfg.n_class, self.tau), self.ytr)
+        s_tr = group_sum(h_tr, cfg.n_class, self.tau)
+        s_te = group_sum(h_te, cfg.n_class, self.tau)
+        if cfg.group_residual:
+            self.accum_tr = self.accum_tr + s_tr    # 累積更新(= 次層のオフセット)
+            self.accum_te = self.accum_te + s_te
+            s_tr, s_te = self.accum_tr, self.accum_te
+        a_te = accuracy(s_te, self.yte)
+        a_tr = accuracy(s_tr, self.ytr)
         self.pool_tr = next_pool(h_tr, self.X, self.pool_tr, cfg)
         self.pool_te = next_pool(h_te, self.Xte, self.pool_te, cfg)
         return a_tr, a_te
@@ -645,6 +685,15 @@ def main():
                    help="window training loss: CE at the last window layer only"
                         " (pure lookahead) or averaged over all window layers"
                         " (deep supervision). groupsum only; ff always uses all")
+    p.add_argument("--group-loss", choices=["ce", "bce"], default="ce",
+                   help="groupsum local loss: ce (cross-entropy on the scaled group"
+                        " sums, original) or bce (per-class BCE: correct class's bit"
+                        " group -> 1, others -> 0, on group means in [0,1])")
+    p.add_argument("--group-residual", action="store_true",
+                   help="boosting readout: each layer's class scores are added to the"
+                        " frozen layers' accumulated prediction (each layer learns to"
+                        " correct the running residual). Prediction = argmax of the"
+                        " total class-c bits over all layers. groupsum, ce, window=1")
     p.add_argument("--objective", choices=["groupsum", "ff"], default="groupsum",
                    help="per-layer local objective: groupsum (GroupSum+CE, original)"
                         " or ff (Forward-Forward goodness = popcount on binary"
@@ -694,6 +743,9 @@ def main():
         p.error("--commit must satisfy 1 <= commit <= window")
     if cfg.carry and (cfg.skip_input or cfg.skip_all):
         p.error("--carry is no-skip only (carried layers assume constant in_dim)")
+    if cfg.group_residual and (cfg.objective != "groupsum"
+                               or cfg.group_loss != "ce" or cfg.window > 1):
+        p.error("--group-residual needs groupsum objective, ce loss, window=1")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
@@ -734,8 +786,15 @@ def main():
     e2e_soft = e2e_hard = None
     if not cfg.skip_e2e:
         e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte, cfg.e2e_depth or depth, cfg)
-    # simplification is pure-Python graph rewriting -> always run on CPU
-    before, after = simplify([L.cpu() for L in layers], Xte_s.cpu(), yte.cpu(), cfg)
+    # simplification is pure-Python graph rewriting -> always run on CPU.
+    # residual: readout sums EVERY layer's class bits, so dead-gate elimination
+    # (which prunes gates not feeding the LAST layer) would drop contributing
+    # gates. Skip until simplify treats all layers as outputs (future work).
+    if cfg.group_residual:
+        print("=== (C) simplification skipped (residual: all-layer readout) ===\n")
+        before = after = 0
+    else:
+        before, after = simplify([L.cpu() for L in layers], Xte_s.cpu(), yte.cpu(), cfg)
 
     summary = {"objective": cfg.objective,
                "greedy_hard_test_acc": round(greedy_acc, 4),

@@ -59,14 +59,15 @@ Plain local training loses ~5 pt of accuracy to backprop — in exchange for zer
 |---|---|---|
 | plain greedy (GroupSum + CE) | 88.4% | 74.3% |
 | + skip-input (`--skip-input`) | 89.1% | —¹ |
-| + windowed lookahead (`--window 2 --commit 2`) | **90.4%** | 76.6% |
+| + windowed lookahead (`--window 2 --commit 2`) | 90.4% | 76.6% |
 | Forward-Forward objective (`--objective ff`) | 86.0% | 76.8% |
 | FF + window | 88.0% | 78.2% |
-| FF + window + hard-negative mining (`--ff-neg`) | 89.7%² | **82.0%³** |
+| FF + window + hard-negative mining (`--ff-neg`) | 89.7%² | 82.0%³ |
+| **residual/boosting readout (`--group-residual`)** | **96.4%** | **90.9%** |
 
 ¹ skip alone is a depth/width-synergy lever — modest at 500-gate single net, and it actively *hurts* FF, so it isn't a fixed-budget winner. ² `mix` negatives. ³ `review` + 0.5 warm-up.
 
-**The winner depends on the judge.** On digits (near its ceiling, so barely discriminating) windowed lookahead on GroupSum tops it at 90.4%. On MNIST — the more discriminating dataset, and the one trusted when the two disagree — the **Forward-Forward stack wins clearly at 82.0%** (+7.7 pt over plain greedy), with FF and windowed lookahead each being the strongest *single* idea (~+2.5 pt) and compounding.
+**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last, which is exactly why accuracy decays with depth (shallow layers see fresh image info, but their good answers are discarded). Accumulate each layer's prediction instead — plain boosting — and the decay vanishes: digits climbs to **96.4%**, MNIST to **90.9%**, single 500-gate net, no skip/window/ensemble, not overfitting (MNIST train 91.9 / test 90.6). Remarkably, that MNIST number *matches the scaling-track flagship below* (4,000 gates × 4 ensemble) at a fraction of the inference area. (Boosting/deep-supervision is a standard idea — no novelty claimed; it just fixes greedy-LGN's depth decay cleanly. Details incl. the `simplify` caveat: [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes).)
 
 ## Off the main track: scaling levers (reference)
 

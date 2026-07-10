@@ -498,3 +498,24 @@ Findings:
 13. **Structured wiring (`--ff-struct`) replaces the label-replication hack at equal accuracy — cleaner, not stronger.** digits (3 seeds, review-warmup W=2 stack, rep 1): f=0 collapses (66.4%, no label access), then monotone 0.25=82.4 / 0.5=86.7 / 0.75=88.7 / **1.0=90.3%**, beating the rep-38 force (88.9%) by +1.4 pt. At f=1.0/rep1 each gate detects one (feature, class) pair — a per-class feature bank the window's 2nd layer combines. **MNIST is a tie, not a win**: f=1.0 rep1 = 81.9% vs 82.0% for rep-470, within noise. The digits gain was a ceiling artifact. Verdict: structured wiring buys the same accuracy with a tiny pool (10 vs 4,700 label bits) and zero wasted gates, but is not itself an accuracy lever — its value is as the base for a repeating structured block (labels re-injected every block; future work).
 
 Full run log and the window / negative-mining / warm-up / iterated-exam / structured-wiring follow-ups: [issue #10](https://github.com/Mming-Lab/greedy-lgn/issues/10).
+
+## Residual/boosting readout: accumulate the answer, and the depth decay vanishes
+
+The depth-decay diagnosis above (plain greedy peaks early, then decays without skip) has a cause worth naming: each layer produces its own GroupSum class scores, but **only the last layer's scores are used** — every earlier layer's answer is thrown away. The shallow layers (which still see fresh image information) make good predictions that are discarded; deep layers must re-derive the answer from information-degraded hard bits.
+
+`--group-residual` keeps them instead: each layer's class scores are **added to the frozen layers' accumulated prediction** (each layer is trained to correct the running residual — plain gradient boosting / deep supervision). The prediction becomes `argmax` over classes of the **total class-c bits summed across all layers** — still a pure logic circuit (a bigger popcount), just reading every layer's output instead of only the last.
+
+The effect is large, and it holds on the arbiter:
+
+| | plain greedy (no skip) | residual |
+|---|---|---|
+| digits | 88.2% @4, decays to 76.9% @16 | climbs to **96.4% @10**, stable |
+| **MNIST** | 74.3% @6, decays | climbs to **90.86% @9** (train 91.9 / test 90.6 — not overfitting) |
+
+- **MNIST +16.5 pt over plain greedy, single 500-gate net, no skip, no window, no ensemble, in 96 s.** It *matches the previous repo MNIST best* (90.9%) — which needed 4,000-gate layers × 4 ensemble members (≈16× the gates plus voting). Residual reaches the scaled/ensemble flagship at a fraction of the inference area.
+- **Not overfitting**: digits drove train to 100% (450 test samples), but MNIST's 60k training set keeps train (91.9%) and test (90.6%) close. The digits train=100% was a small-dataset artifact.
+- **Why it works**: the plateau was never a supervision problem (each layer already sees the label) — the *answer* was discarded each layer. Accumulating it preserves the shallow layers' good predictions and lets deep layers only add corrections.
+- **Honest limitations**: (1) boosting / deep supervision is a standard idea; nothing here claims novelty, only that it fixes greedy-LGN's depth decay cleanly. (2) The readout reads all layers' class bits (a larger popcount), not just the last. (3) `simplify` currently prunes gates not feeding the *last* layer, which is wrong when every layer contributes; simplification is **skipped in residual mode** until it treats all layers as outputs. ce loss, window=1 in this first version.
+- Idea proposed by the project owner, from the intuition "learning is accumulation — so don't throw the answer away."
+
+Full run log: [issue #11](https://github.com/Mming-Lab/greedy-lgn/issues/11).
