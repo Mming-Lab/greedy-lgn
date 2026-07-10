@@ -518,4 +518,14 @@ The effect is large, and it holds on the arbiter:
 - **Honest limitations**: (1) boosting / deep supervision is a standard idea; nothing here claims novelty, only that it fixes greedy-LGN's depth decay cleanly. (2) The readout reads all layers' class bits (a larger popcount), not just the last. (3) `simplify` currently prunes gates not feeding the *last* layer, which is wrong when every layer contributes; simplification is **skipped in residual mode** until it treats all layers as outputs. ce loss, window=1 in this first version.
 - Idea proposed by the project owner, from the intuition "learning is accumulation — so don't throw the answer away."
 
+**Residual stacks with skip-input — new repo MNIST record.** Residual and skip both cure the depth decay, but by different mechanisms (residual accumulates the *answer*; skip re-exposes the *image*), so they compound:
+
+| MNIST, 500-gate single net | acc | depth |
+|---|---|---|
+| residual (no skip) | 90.86% | 9 (converges fast, shallow) |
+| residual + `--skip-input` (cap 25) | 93.12% | 24 |
+| residual + `--skip-input` (cap 40) | **93.85%** | 38 (still creeping up, diminishing) |
+
+digits likewise: residual 96.4% → residual+skip **97.3%**. The 93.85% is a single 500-gate net with no ensemble and no width scaling — it beats the previous repo best of 90.9% (which needed 4,000-gate layers × 4 ensemble ≈ 16× the gates plus voting). Honest cost: skip's +3 pt comes with a much deeper circuit (9 → 38 layers = longer critical-path latency), so residual-alone (90.86% @9) is the shallow/fast champion and residual+skip (93.85% @38) is the max-accuracy champion — pick by whether latency or accuracy matters.
+
 Full run log: [issue #11](https://github.com/Mming-Lab/greedy-lgn/issues/11).

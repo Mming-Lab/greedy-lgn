@@ -64,10 +64,11 @@ Plain local training loses ~5 pt of accuracy to backprop — in exchange for zer
 | FF + window | 88.0% | 78.2% |
 | FF + window + hard-negative mining (`--ff-neg`) | 89.7%² | 82.0%³ |
 | **residual/boosting readout (`--group-residual`)** | **96.4%** | **90.9%** |
+| **residual + skip-input** | **97.3%** | **93.9%⁴** |
 
-¹ skip alone is a depth/width-synergy lever — modest at 500-gate single net, and it actively *hurts* FF, so it isn't a fixed-budget winner. ² `mix` negatives. ³ `review` + 0.5 warm-up.
+¹ skip alone is a depth/width-synergy lever — modest at 500-gate single net, and it actively *hurts* FF, so it isn't a fixed-budget winner. ² `mix` negatives. ³ `review` + 0.5 warm-up. ⁴ at depth 38 (still slowly climbing); residual-alone 90.9% converges at depth 9.
 
-**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last, which is exactly why accuracy decays with depth (shallow layers see fresh image info, but their good answers are discarded). Accumulate each layer's prediction instead — plain boosting — and the decay vanishes: digits climbs to **96.4%**, MNIST to **90.9%**, single 500-gate net, no skip/window/ensemble, not overfitting (MNIST train 91.9 / test 90.6). Remarkably, that MNIST number *matches the scaling-track flagship below* (4,000 gates × 4 ensemble) at a fraction of the inference area. (Boosting/deep-supervision is a standard idea — no novelty claimed; it just fixes greedy-LGN's depth decay cleanly. Details incl. the `simplify` caveat: [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes).)
+**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last, which is exactly why accuracy decays with depth (shallow layers see fresh image info, but their good answers are discarded). Accumulate each layer's prediction instead — plain boosting — and the decay vanishes: MNIST climbs from 74.3% to **90.9%** (single 500-gate net, no skip/window/ensemble, not overfitting: train 91.9 / test 90.6). That already matches the scaling-track flagship below (4,000 gates × 4 ensemble) at a fraction of the area. Stacking `--skip-input` on top — residual accumulates the *answer*, skip re-exposes the *image*, different cures for the same decay — compounds to **93.9%**, a new repo record, still at 500 gates single net (honest cost: depth grows 9 → 38, i.e. more latency). Boosting/deep-supervision is a standard idea — no novelty claimed; it just fixes greedy-LGN's depth decay cleanly. [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes)
 
 ## Off the main track: scaling levers (reference)
 
