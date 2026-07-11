@@ -70,16 +70,9 @@ Plain local training loses ~5 pt of accuracy to backprop — in exchange for zer
 
 **The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last, which is exactly why accuracy decays with depth (shallow layers see fresh image info, but their good answers are discarded). Accumulate each layer's prediction instead — plain boosting — and the decay vanishes: MNIST climbs from 74.3% to **90.9%** (single 500-gate net, no skip/window/ensemble, not overfitting: train 91.9 / test 90.6). That already matches the scaling-track flagship below (4,000 gates × 4 ensemble) at a fraction of the area. Stacking `--skip-input` on top — residual accumulates the *answer*, skip re-exposes the *image*, different cures for the same decay — compounds to **93.9%**, a new repo record, still at 500 gates single net (honest cost: depth grows 9 → 38, i.e. more latency). Boosting/deep-supervision is a standard idea — no novelty claimed; it just fixes greedy-LGN's depth decay cleanly. [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes)
 
-## Off the main track: scaling levers (reference)
+## Off the main track: scaling levers
 
-Wider layers (`--gates`) and ensembles of independent nets (`--ensemble`) are a different kind of lever: they spend compute and inference-circuit area, and reliably buy accuracy — but they don't tell you which idea is any good, so they sit outside the fixed-budget arena. For reference, where they take the same pipeline:
-
-| | plain greedy (start) | best with scaling | how |
-|---|---|---|---|
-| **digits** | 88.2% | **96.4%** | 2,000 gates + `--skip-input`, ×4 ensemble (majority vote) |
-| **MNIST** | 74.3% | **90.9%** | 4,000 gates + `--skip-input`, ×4 ensemble (soft vote) |
-
-End-to-end backprop at equal *training memory* averages 91.5% on digits — the scaled stack is above it, at the cost of more inference area. Details: [memory-matched width](RESULTS.md#memory-matched-comparison-equal-training-memory-greedy-wins), [ensemble voting](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever), [MNIST scaling](RESULTS.md#mnist-scaling-width--ensembles-push-past-90). This track is parked; it gets revisited only when a fixed-budget winner deserves a one-off scale check.
+Wider layers (`--gates`) and ensembles (`--ensemble`) buy accuracy by spending compute/area, not by being good ideas — so they live outside the arena, in **[SCALING.md](SCALING.md)** (parked reference: digits 96.4% / MNIST 90.9%). Note the residual readout above already matches that MNIST flagship as a single 500-gate net.
 
 ## All experiments (details in [RESULTS.md](RESULTS.md))
 
