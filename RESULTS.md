@@ -357,6 +357,13 @@ Findings:
    transient copies during the skip-pool transition ≈ 7 GB). Fix candidates for a
    follow-up: uint8 pools (hard bits are bits), CPU-resident pools with per-batch
    transfer, or an in-place pool buffer.
+6. **Width also lifts the residual readout (reference only).** The residual/boosting
+   readout is a fixed-budget (500-gate) idea, but for reference, giving it more width
+   scales cleanly on MNIST single net, no ensemble: 500 → **90.9%**, 1,000 → **93.3%**,
+   2,000 → **95.4%** (depth 8). So a single 2,000-gate residual net already beats the
+   old width×ensemble flagship (90.9%) by +4.5 pt. This is the scaling track, not the
+   arena — the headline claims stay at 500 gates — but it shows the residual idea does
+   not stop paying off when you spend area on it.
 
 Full run log: [issue #9](https://github.com/Mming-Lab/greedy-lgn/issues/9).
 
