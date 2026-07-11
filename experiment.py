@@ -198,29 +198,31 @@ class GroupSum:
         W=1のとき従来のgreedy 1層学習と厳密に一致する"""
         cfg = self.cfg
         opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
-        def cls_loss(h, y, accum):
-            # 出力ビットをクラス群に集計してローカルロス。ce=scaled-sumをlogit扱いの
-            # cross-entropy(従来)、bce=group-mean(∈[0,1])とone-hot目標のBCE。
-            # residual時はaccum(前層までの累積スコア=固定オフセット)を足してから
-            if cfg.group_loss == "bce":
-                return F.binary_cross_entropy(group_mean(h, cfg.n_class),
-                                              F.one_hot(y, cfg.n_class).float())
-            logits = group_sum(h, cfg.n_class, self.tau)
-            return F.cross_entropy(logits if accum is None else accum + logits, y)
         def loss(idx):
             pool = self.pool_tr if idx is None else self.pool_tr[idx]
             X = self.X if idx is None else self.X[idx]
             y = self.ytr if idx is None else self.ytr[idx]
-            accum = (None if not cfg.group_residual else
-                     self.accum_tr if idx is None else self.accum_tr[idx])
+            # residual: 凍結prefixの累積accumを引き継ぎ、窓内の各層の寄与を足して
+            # いく(boostingをwindowに拡張=①+②の土台)。非residualはrun=None
+            run = (None if not cfg.group_residual else
+                   self.accum_tr if idx is None else self.accum_tr[idx])
+            def term(h):
+                # ce=scaled-sum(residualは累積run)のCE、bce=group-meanのBCE
+                if cfg.group_loss == "bce":
+                    return F.binary_cross_entropy(group_mean(h, cfg.n_class),
+                                                  F.one_hot(y, cfg.n_class).float())
+                return F.cross_entropy(run if cfg.group_residual
+                                       else group_sum(h, cfg.n_class, self.tau), y)
             h, terms = None, []
             for L in win:
                 h = L(pool)
+                if cfg.group_residual:
+                    g = group_sum(h, cfg.n_class, self.tau)
+                    run = g if run is None else run + g
                 if cfg.win_loss == "all":
-                    terms.append(cls_loss(h, y, accum))
+                    terms.append(term(h))
                 pool = next_pool(h, X, pool, cfg)
-            return (sum(terms) / len(terms) if cfg.win_loss == "all"
-                    else cls_loss(h, y, accum))
+            return (sum(terms) / len(terms) if cfg.win_loss == "all" else term(h))
         fit(loss, len(self.pool_tr), cfg, cfg.seed * 1000 + d0 + 1, cfg.epochs, opt)
     def commit(self, layers, L):
         """Lを離散化・凍結してプールをHARDビットで前進。(train, test)プローブを返す。
@@ -743,9 +745,8 @@ def main():
         p.error("--commit must satisfy 1 <= commit <= window")
     if cfg.carry and (cfg.skip_input or cfg.skip_all):
         p.error("--carry is no-skip only (carried layers assume constant in_dim)")
-    if cfg.group_residual and (cfg.objective != "groupsum"
-                               or cfg.group_loss != "ce" or cfg.window > 1):
-        p.error("--group-residual needs groupsum objective, ce loss, window=1")
+    if cfg.group_residual and (cfg.objective != "groupsum" or cfg.group_loss != "ce"):
+        p.error("--group-residual needs groupsum objective and ce loss")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
