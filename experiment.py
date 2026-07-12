@@ -41,6 +41,8 @@ def all16(a, b):
         1 - (a + b - ab), 1 - (a + b - 2 * ab), 1 - b, 1 - b + ab, 1 - a,
         1 - a + ab, 1 - ab, torch.ones_like(a)], dim=-1)
 
+GATE_A = 3   # all16のindex 3 = 第1入力aのパススルー(恒等warm-startで使用)
+
 def f16(fn, a, b):
     ab = a * b
     return [a * 0, ab, a - ab, a, b - ab, b, a + b - 2 * ab, a + b - ab,
@@ -55,12 +57,20 @@ class LogicLayer(nn.Module):
     構造化モード(FFのラベル×ラベル無駄ゲート対策)。主ドロー(ia/ib/logits)を
     従来順で引いた後に別ジェネレータで一部を上書きするので、struct=None または
     frac=0 のとき従来とビット単位で一致する。"""
-    def __init__(self, in_dim, n_gates, seed, struct=None):
+    def __init__(self, in_dim, n_gates, seed, struct=None, warm=0.0):
         super().__init__()
         g = torch.Generator().manual_seed(seed)
         ia = torch.randint(0, in_dim, (n_gates,), generator=g)
         ib = torch.randint(0, in_dim, (n_gates,), generator=g)
         logits = torch.randn(n_gates, 16, generator=g)
+        # warm>0: 恒等初期化。前層出力h(プール末尾n_gates本 — no-skip/skip共通)を
+        # gate A のパススルーで再現し、logitをAに強さwarmだけ偏らせる。新層は前層を
+        # 壊さない状態から残差だけ微調整して始まる(ResNetの恒等ブロック初期化)。
+        # in_dim>=n_gates が必要(前層があれば成立)。warm=0で従来とビット一致
+        if warm > 0 and in_dim >= n_gates:
+            ia = torch.arange(n_gates) + (in_dim - n_gates)  # gate i <- 前層ビットi
+            logits = logits.clone()
+            logits[:, GATE_A] += warm
         if struct is not None:
             data_hi, lab_lo, lab_hi, frac, sseed = struct
             k = int(round(n_gates * frac))
@@ -184,14 +194,18 @@ class GroupSum:
         cfg = self.cfg
         return ("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
                 + (" [residual]" if cfg.group_residual else "")
+                + (f" [boost={cfg.group_boost}]" if cfg.group_boost != 1.0 else "")
+                + (f" [warm-start={cfg.warm_start}]" if cfg.warm_start > 0 else "")
                 + (f" [loss={cfg.group_loss}]" if cfg.group_loss != "ce" else "")
                 + (f" [window={cfg.window} commit={cfg.commit} loss={cfg.win_loss}]"
                    if cfg.window > 1 else ""))
     def begin(self, layers, d0):   # 窓学習の準備。窓の入力次元を返す
         return self.pool_tr.shape[1]
-    def make_layer(self, in_dim, d0, k):   # groupsumは常に素のランダム配線
+    def make_layer(self, in_dim, d0, k):
+        # 前層があるとき(d0+k>0)だけ恒等warm-start。最初の層は前層が無いので素のまま
+        warm = self.cfg.warm_start if (d0 + k) > 0 else 0.0
         return LogicLayer(in_dim, self.cfg.gates,
-                          seed=self.cfg.seed * 100 + d0 + k + 1)
+                          seed=self.cfg.seed * 100 + d0 + k + 1, warm=warm)
     def train(self, win, layers, d0):
         """窓内W層をsoftのまま共同学習(receding horizonの1ステップ)。
         損失は窓の最終層のCE(--win-loss last)か全層平均(--win-loss all)。
@@ -206,13 +220,25 @@ class GroupSum:
             # いく(boostingをwindowに拡張=①+②の土台)。非residualはrun=None
             run = (None if not cfg.group_residual else
                    self.accum_tr if idx is None else self.accum_tr[idx])
+            # --group-boost: 凍結累積(=run初期値)が誤答のサンプルのCEをB倍に
+            # 傾斜(AdaBoost式のサンプル再重み付け)。採点者は凍結prefixのみ
+            # (窓内の未凍結寄与を含めない)。layers空(最初の層)は累積ゼロで
+            # 誤答判定が縮退するので一律。B=1.0は従来と厳密一致(回帰維持)
+            wvec = None
+            if cfg.group_boost != 1.0 and run is not None and layers:
+                wvec = torch.where(run.argmax(1) != y,
+                                   float(cfg.group_boost), 1.0)
             def term(h):
                 # ce=scaled-sum(residualは累積run)のCE、bce=group-meanのBCE
                 if cfg.group_loss == "bce":
                     return F.binary_cross_entropy(group_mean(h, cfg.n_class),
                                                   F.one_hot(y, cfg.n_class).float())
-                return F.cross_entropy(run if cfg.group_residual
-                                       else group_sum(h, cfg.n_class, self.tau), y)
+                logits = run if cfg.group_residual else group_sum(h, cfg.n_class,
+                                                                  self.tau)
+                if wvec is None:
+                    return F.cross_entropy(logits, y)
+                ce = F.cross_entropy(logits, y, reduction="none")
+                return (ce * wvec).sum() / wvec.sum()
             h, terms = None, []
             for L in win:
                 h = L(pool)
@@ -696,6 +722,17 @@ def main():
                         " frozen layers' accumulated prediction (each layer learns to"
                         " correct the running residual). Prediction = argmax of the"
                         " total class-c bits over all layers. groupsum, ce, window=1")
+    p.add_argument("--group-boost", type=float, default=1.0, metavar="B",
+                   help="AdaBoost-style sample reweighting on top of residual:"
+                        " samples the frozen running sum currently misclassifies get"
+                        " their CE weighted B times more in the next layer's training"
+                        " (1.0 = off, uniform). Needs --group-residual.")
+    p.add_argument("--warm-start", type=float, default=0.0, metavar="B",
+                   help="identity init: each new layer (that has a previous layer)"
+                        " starts by reproducing the previous layer's output bits"
+                        " (gate-A passthrough, logit biased by B toward A) instead of"
+                        " random, then learns the residual from there (ResNet-style"
+                        " identity block). 0 = off, random init. groupsum only.")
     p.add_argument("--objective", choices=["groupsum", "ff"], default="groupsum",
                    help="per-layer local objective: groupsum (GroupSum+CE, original)"
                         " or ff (Forward-Forward goodness = popcount on binary"
@@ -747,6 +784,10 @@ def main():
         p.error("--carry is no-skip only (carried layers assume constant in_dim)")
     if cfg.group_residual and (cfg.objective != "groupsum" or cfg.group_loss != "ce"):
         p.error("--group-residual needs groupsum objective and ce loss")
+    if cfg.group_boost != 1.0 and not cfg.group_residual:
+        p.error("--group-boost needs --group-residual")
+    if cfg.warm_start > 0 and cfg.objective != "groupsum":
+        p.error("--warm-start needs groupsum objective")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
