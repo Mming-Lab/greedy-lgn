@@ -124,7 +124,15 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
   MNISTで大差 = digits天井/MNIST審判の2層運用の好例。ログはissue #10のコメント
 
 ## ファイル
-- experiment.py : 全実験を1ファイルに統合(greedy / e2eベースライン / 簡略化+検証)
+2026-07-12にモジュール分割(純粋なコード移動、CLI・全数値ビット等価を回帰で確認):
+- experiment.py : CLI入口(argparse+main のみ)。既存コマンドは全て不変
+- core.py      : 共有基盤(16ゲート、LogicLayer、load_data、fit、適応エポック停止判定)
+- groupsum.py  : GroupSum目的(主線)。residual/boost/warm-startはこの中のモード
+- ff.py        : Forward-Forward目的(負例マイニング・構造化配線含む)
+- greedy.py    : 手法本体(run_greedy + make_objective)
+- scaling.py   : オフトラックのスケーリングレバー(アンサンブル投票、SCALING.md対応)
+- e2e.py       : 逆伝播ベースライン
+- simplify.py  : 論理簡略化+ビット等価検証
 - README.md    : 英語本体+日本語概要。要点サマリ+RESULTS.mdへのリンク集に圧縮済み
 - RESULTS.md   : 実験詳細の本体(セットアップ・数値表・反証された仮説)。
                  今後の実験結果はREADMEでなくここに追記する

@@ -1,7 +1,8 @@
 """Regression tests: pinned, bit-exact results for published configurations.
 
 このリポジトリの生命線は「公開済みの数字がビット単位で再現できること」。
-experiment.py をリファクタ・機能追加するときは、必ずこのスイートを通すこと
+experiment.py と各モジュール(core/groupsum/ff/greedy/scaling/e2e/simplify)を
+リファクタ・機能追加するときは、必ずこのスイートを通すこと
 (数値は丸めではなく厳密一致で比較する。1e-4 の丸め後の値が変わったら、
 RNGの消費順序か演算順序が変わっている)。
 
