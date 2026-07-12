@@ -114,6 +114,13 @@ def main():
                         " samples the frozen running sum currently misclassifies get"
                         " their CE weighted B times more in the next layer's training"
                         " (1.0 = off, uniform). Needs --group-residual.")
+    p.add_argument("--seq", action="store_true",
+                   help="row-sequential recurrence (RDDLGN-style temporal state):"
+                        " present the image one row per step; each greedy layer is"
+                        " a recurrent cell s_t = L([x_t; s_(t-1)]) trained by BPTT"
+                        " over T steps, then discretized so frozen layers pass HARD"
+                        " state bits to the next layer. Readout = GroupSum of the"
+                        " final state. groupsum + window=1 + no-skip only.")
     p.add_argument("--recur", type=int, default=1, metavar="K",
                    help="within-layer recursion: apply each layer K times with"
                         " shared weights (wiring must line up, so layer 1 -- input"
@@ -190,6 +197,11 @@ def main():
                           or cfg.objective != "groupsum" or cfg.carry):
         p.error("--recur is no-skip + groupsum only (iteration needs the pool"
                 " width to equal --gates)")
+    if cfg.seq and (cfg.objective != "groupsum" or cfg.window > 1
+                    or cfg.skip_input or cfg.skip_all or cfg.carry
+                    or cfg.recur > 1 or cfg.group_residual):
+        p.error("--seq is groupsum + window=1 + no-skip only (no recur/residual"
+                " combination yet)")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
@@ -220,9 +232,12 @@ def main():
             e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte,
                                          cfg.e2e_depth or depths[0], cfg)
         before = after = 0
-        for ls in members:  # メンバーごとに簡略化+ビット等価検証
-            b, a = simplify(unroll(ls), Xte_s.cpu(), yte.cpu(), cfg)
-            before += b; after += a
+        if cfg.seq:
+            print("=== (C) simplification skipped (seq: sequential circuit) ===\n")
+        else:
+            for ls in members:  # メンバーごとに簡略化+ビット等価検証
+                b, a = simplify(unroll(ls), Xte_s.cpu(), yte.cpu(), cfg)
+                before += b; after += a
         summary = {"member_hard_test_acc": [round(a, 4) for a in member_acc],
                    "member_mean": round(float(np.mean(member_acc)), 4),
                    "ensemble_soft_vote_acc": round(soft_acc, 4),
@@ -245,6 +260,12 @@ def main():
     # gates. Skip until simplify treats all layers as outputs (future work).
     if cfg.group_residual:
         print("=== (C) simplification skipped (residual: all-layer readout) ===\n")
+        before = after = 0
+    elif cfg.seq:
+        # 時系列回路はレジスタ(状態)を含み、現簡略化器(組合せ回路前提)の対象外。
+        # 時間展開しての検証は将来課題
+        print("=== (C) simplification skipped (seq: sequential circuit with"
+              " registers) ===\n")
         before = after = 0
     else:
         before, after = simplify(unroll(layers), Xte_s.cpu(), yte.cpu(), cfg)
