@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from core import (LogicLayer, group_sum, group_mean, accuracy, next_pool,
-                  hard_batched, hard_pass, fit, make_stop_check)
+                  hard_batched, hard_pass, fit, make_stop_check, reps)
 
 # ----------------------------- local objectives -----------------------------
 # greedyループ(run_greedy)は目的関数に依存しない骨格で、各objectiveが
@@ -31,6 +31,7 @@ class GroupSum:
         cfg = self.cfg
         return ("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
                 + (" [residual]" if cfg.group_residual else "")
+                + (f" [recur={cfg.recur}]" if cfg.recur > 1 else "")
                 + (f" [boost={cfg.group_boost}]" if cfg.group_boost != 1.0 else "")
                 + (f" [warm-start={cfg.warm_start}]" if cfg.warm_start > 0 else "")
                 + (f" [epoch-peak={cfg.epoch_peak}"
@@ -87,7 +88,11 @@ class GroupSum:
                 return (ce * wvec).sum() / wvec.sum()
             h, terms = None, []
             for L in win:
-                h = L(pool)
+                # --recur: 同じ層をsoftのまま反復適用(重み共有、勾配はK回展開を流れる)
+                x = pool
+                for _ in range(reps(pool.shape[1], cfg)):
+                    h = L(x)
+                    x = h
                 if cfg.group_residual:
                     g = group_sum(h, cfg.n_class, self.tau)
                     run = g if run is None else run + g
@@ -101,7 +106,9 @@ class GroupSum:
         """Lを離散化・凍結してプールをHARDビットで前進。(train, test)プローブを返す。
         residual時は累積スコアに当層の寄与を足し、プローブは累積で測る"""
         cfg = self.cfg
-        h_tr, h_te = hard_batched(L, self.pool_tr), hard_batched(L, self.pool_te)
+        h_tr, h_te = self.pool_tr, self.pool_te
+        for _ in range(reps(self.pool_tr.shape[1], cfg)):   # --recur: hardでK回反復
+            h_tr, h_te = hard_batched(L, h_tr), hard_batched(L, h_te)
         s_tr = group_sum(h_tr, cfg.n_class, self.tau)
         s_te = group_sum(h_te, cfg.n_class, self.tau)
         if cfg.group_residual:

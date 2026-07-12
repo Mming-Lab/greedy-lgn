@@ -127,12 +127,22 @@ def hard_batched(layer, x, budget=8192 * 500):  # bound the [B, G, 16] temporary
     return layer.hard(x) if len(x) <= chunk else torch.cat(
         [layer.hard(c) for c in x.split(chunk)])
 
+def reps(pool_w, cfg):
+    """--recur: この層を何回反復適用するか。重み共有の再帰は配線次元が
+    合うとき(プール幅==gates、no-skipの層2以降)だけ成立。層1(入力幅)は1回。
+    recur=1(既定)は常に1で従来とビット等価"""
+    r = getattr(cfg, "recur", 1)
+    return r if r > 1 and pool_w == cfg.gates else 1
+
 def hard_pass(layers, X, cfg):
     """凍結済み層をhardで順に評価し、(最終層の出力h, 次層の配線プール)を返す。
-    layersが空のときは (None, X)"""
+    layersが空のときは (None, X)。--recur>1では各層をreps回反復適用"""
     pool, h = X, None
     for L in layers:
-        h = hard_batched(L, pool)
+        x = pool
+        for _ in range(reps(pool.shape[1], cfg)):
+            h = hard_batched(L, x)
+            x = h                    # 反復中は h がそのまま次の入力(no-skip前提)
         pool = next_pool(h, X, pool, cfg)
     return h, pool
 

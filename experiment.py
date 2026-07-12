@@ -26,7 +26,7 @@ reproducibility.
 import argparse, json
 import numpy as np
 import torch
-from core import load_data
+from core import load_data, reps
 from ff import ff_inputs
 from greedy import run_greedy
 from scaling import run_ensemble
@@ -114,6 +114,12 @@ def main():
                         " samples the frozen running sum currently misclassifies get"
                         " their CE weighted B times more in the next layer's training"
                         " (1.0 = off, uniform). Needs --group-residual.")
+    p.add_argument("--recur", type=int, default=1, metavar="K",
+                   help="within-layer recursion: apply each layer K times with"
+                        " shared weights (wiring must line up, so layer 1 -- input"
+                        " width -- runs once and layers 2+ iterate). Learned logits"
+                        " stay 1 layer's worth; the unrolled circuit is K layers"
+                        " deep per trained layer. no-skip + groupsum only.")
     p.add_argument("--warm-start", type=float, default=0.0, metavar="B",
                    help="identity init: each new layer (that has a previous layer)"
                         " starts by reproducing the previous layer's output bits"
@@ -180,6 +186,10 @@ def main():
     if cfg.epoch_chain > 0 and (cfg.epoch_stop <= 0 or cfg.epoch_peak > 0):
         p.error("--epoch-chain needs --epoch-stop (first-layer criterion)"
                 " and is exclusive with --epoch-peak")
+    if cfg.recur > 1 and (cfg.skip_input or cfg.skip_all
+                          or cfg.objective != "groupsum" or cfg.carry):
+        p.error("--recur is no-skip + groupsum only (iteration needs the pool"
+                " width to equal --gates)")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
@@ -193,6 +203,15 @@ def main():
     Xte_s = (ff_inputs(Xte, yte, cfg.n_class, cfg.ff_label_rep)
              if cfg.objective == "ff" else Xte)
 
+    def unroll(ls):
+        """--recur>1: 簡略化・検証には反復を展開した回路(同じ層のK回並び)を渡す。
+        反復回数は実行時と同じ規則(プール幅==gatesのときK回)。recur=1では ls のまま"""
+        out, w = [], Xte_s.shape[1]
+        for L in ls:
+            out += [L.cpu()] * reps(w, cfg)
+            w = cfg.gates
+        return out
+
     if cfg.ensemble > 1:
         members, member_acc, depths, soft_acc, maj_acc = run_ensemble(
             Xtr, Xte, ytr, yte, cfg)
@@ -202,7 +221,7 @@ def main():
                                          cfg.e2e_depth or depths[0], cfg)
         before = after = 0
         for ls in members:  # メンバーごとに簡略化+ビット等価検証
-            b, a = simplify([L.cpu() for L in ls], Xte_s.cpu(), yte.cpu(), cfg)
+            b, a = simplify(unroll(ls), Xte_s.cpu(), yte.cpu(), cfg)
             before += b; after += a
         summary = {"member_hard_test_acc": [round(a, 4) for a in member_acc],
                    "member_mean": round(float(np.mean(member_acc)), 4),
@@ -228,7 +247,7 @@ def main():
         print("=== (C) simplification skipped (residual: all-layer readout) ===\n")
         before = after = 0
     else:
-        before, after = simplify([L.cpu() for L in layers], Xte_s.cpu(), yte.cpu(), cfg)
+        before, after = simplify(unroll(layers), Xte_s.cpu(), yte.cpu(), cfg)
 
     summary = {"objective": cfg.objective,
                "greedy_hard_test_acc": round(greedy_acc, 4),
