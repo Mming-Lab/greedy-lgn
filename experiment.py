@@ -177,7 +177,7 @@ def fit(loss, n, cfg, seed, epochs, opt, stop_check=None):
         if stop_check is not None and stop_check(e):
             break
 
-def make_stop_check(win, cfg, d0=0):
+def make_stop_check(win, cfg, d0=0, obj=None):
     """適応エポックの停止判定を作る。win内の全ゲートのargmax選択(=離散回路)を
     epoch_checkごとにスナップショットし、変化率(churn)で層を早期終了する。
     2モード:
@@ -188,11 +188,19 @@ def make_stop_check(win, cfg, d0=0):
     --epoch-peak-decay D は深さスケジュール: 層d(凍結済み層数)の実効F=F*D^d。
     浅い層は早畳み・深い層ほど飽和まで粘る(F→0でchurn完全停止まで待つのと同等。
     総深さは自動選択で事前に不明なので、地平線不要の指数減衰にしている)。
+    --epoch-chain M は連鎖アンカー: 最初の層は飽和基準(--epoch-stop)で止め、
+    その発火時のchurn率を「収束の物差し」として記録。以降の各層は自分のchurnが
+    M×(前層の停止時churn率)未満に減衰したら畳む(閾値の手調整を層1が自動校正。
+    M=1で前層と同じ付近、M>1で世代ごとに早畳み)。
     epoch_min前は判定しない(warm恒等層は序盤ほぼ変化ゼロ→活発化→減衰と
     遅れて立ち上がるため、学習前の静かな谷での誤発火を防ぐ)。
-    どちらも0のときは None を返し、従来の固定エポックのまま(ビット等価)"""
+    どれも0のときは None を返し、従来の固定エポックのまま(ビット等価)"""
     if cfg.epoch_stop <= 0 and cfg.epoch_peak <= 0:
         return None
+    thr = cfg.epoch_stop
+    if cfg.epoch_chain > 0 and d0 > 0 and getattr(obj, "stop_rate", None) is not None:
+        # 前層の停止時churnをアンカーに(床=1ゲート分。rate量子=1/gates未満は無意味)
+        thr = max(cfg.epoch_chain * obj.stop_rate, 1.0 / cfg.gates)
     f_eff = cfg.epoch_peak * (cfg.epoch_peak_decay ** d0)
     state = {"prev": None, "hits": 0, "peak": 0.0}
     @torch.no_grad()
@@ -209,12 +217,15 @@ def make_stop_check(win, cfg, d0=0):
             state["peak"] = max(state["peak"], rate)
             fired = state["peak"] > 0 and rate < f_eff * state["peak"]
         else:
-            fired = rate < cfg.epoch_stop
+            fired = rate < thr
         state["hits"] = state["hits"] + 1 if fired else 0
         if state["hits"] >= cfg.epoch_patience:
+            if cfg.epoch_chain > 0 and obj is not None:
+                obj.stop_rate = rate       # 次層のアンカーとして記録
             print(f"    (epoch-stop: layer done at epoch {e}, rate={rate:.4f}"
                   + (f", peak={state['peak']:.4f} F={f_eff:.3f}"
-                     if cfg.epoch_peak > 0 else "")
+                     if cfg.epoch_peak > 0 else
+                     f", thr={thr:.4f}" if cfg.epoch_chain > 0 else "")
                   + ")")
             return True
         return False
@@ -250,8 +261,10 @@ class GroupSum:
                       if cfg.epoch_peak_decay != 1.0 else "")
                    + f" min={cfg.epoch_min} cap={cfg.epochs}]"
                    if cfg.epoch_peak > 0 else
-                   f" [epoch-stop={cfg.epoch_stop} min={cfg.epoch_min}"
-                   f" cap={cfg.epochs}]" if cfg.epoch_stop > 0 else "")
+                   f" [epoch-stop={cfg.epoch_stop}"
+                   + (f" chain={cfg.epoch_chain}" if cfg.epoch_chain > 0 else "")
+                   + f" min={cfg.epoch_min} cap={cfg.epochs}]"
+                   if cfg.epoch_stop > 0 else "")
                 + (f" [loss={cfg.group_loss}]" if cfg.group_loss != "ce" else "")
                 + (f" [window={cfg.window} commit={cfg.commit} loss={cfg.win_loss}]"
                    if cfg.window > 1 else ""))
@@ -306,7 +319,7 @@ class GroupSum:
                 pool = next_pool(h, X, pool, cfg)
             return (sum(terms) / len(terms) if cfg.win_loss == "all" else term(h))
         fit(loss, len(self.pool_tr), cfg, cfg.seed * 1000 + d0 + 1, cfg.epochs, opt,
-            stop_check=make_stop_check(win, cfg, d0))
+            stop_check=make_stop_check(win, cfg, d0, self))
     def commit(self, layers, L):
         """Lを離散化・凍結してプールをHARDビットで前進。(train, test)プローブを返す。
         residual時は累積スコアに当層の寄与を足し、プローブは累積で測る"""
@@ -754,6 +767,13 @@ def main():
                    help="depth schedule for --epoch-peak: layer d uses F*D^d, so"
                         " early layers fold fast (weak learners) and deeper layers"
                         " train ever closer to saturation. 1.0 = constant F.")
+    p.add_argument("--epoch-chain", type=float, default=0.0, metavar="M",
+                   help="chained anchor: layer 1 settles via --epoch-stop and its"
+                        " stop-time churn rate becomes the yardstick; each later"
+                        " layer stops when its churn decays below M x the previous"
+                        " layer's stop rate (auto-calibrated threshold; M=1 same"
+                        " neighbourhood, M>1 fold earlier each generation). 0 = off."
+                        " Needs --epoch-stop for the first layer.")
     p.add_argument("--epoch-min", type=int, default=70, metavar="M",
                    help="do not stop before epoch M (protects warm-start identity"
                         " layers: their churn dips in a quiet valley around epoch"
@@ -871,6 +891,9 @@ def main():
         p.error("--warm-start needs groupsum objective")
     if (cfg.epoch_stop > 0 or cfg.epoch_peak > 0) and cfg.objective != "groupsum":
         p.error("--epoch-stop/--epoch-peak need groupsum objective")
+    if cfg.epoch_chain > 0 and (cfg.epoch_stop <= 0 or cfg.epoch_peak > 0):
+        p.error("--epoch-chain needs --epoch-stop (first-layer criterion)"
+                " and is exclusive with --epoch-peak")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
