@@ -154,22 +154,71 @@ def hard_pass(layers, X, cfg):
         pool = next_pool(h, X, pool, cfg)
     return h, pool
 
-def fit(loss, n, cfg, seed, epochs, opt):
+def fit(loss, n, cfg, seed, epochs, opt, stop_check=None):
     """full-batch / minibatch 共通のエポックループ。loss(idx) は idx=None で
-    全バッチ、Tensorでその行だけの損失を返すクロージャ"""
+    全バッチ、Tensorでその行だけの損失を返すクロージャ。
+    stop_check(epoch)->bool を渡すと各エポック後に呼び、Trueで早期終了
+    (適応エポック=頭打ち検出)。stop_check=None のとき従来と完全一致(ビット等価)"""
     if not cfg.batch or cfg.batch >= n:   # full-batch (default)
-        for _ in range(epochs):
+        for e in range(1, epochs + 1):
             opt.zero_grad()
             loss(None).backward()
             opt.step()
+            if stop_check is not None and stop_check(e):
+                break
         return
     g = torch.Generator().manual_seed(seed)
-    for _ in range(epochs):
+    for e in range(1, epochs + 1):
         for idx in torch.randperm(n, generator=g).split(cfg.batch):
             idx = idx.to(cfg.device)
             opt.zero_grad()
             loss(idx).backward()
             opt.step()
+        if stop_check is not None and stop_check(e):
+            break
+
+def make_stop_check(win, cfg, d0=0):
+    """適応エポックの停止判定を作る。win内の全ゲートのargmax選択(=離散回路)を
+    epoch_checkごとにスナップショットし、変化率(churn)で層を早期終了する。
+    2モード:
+      --epoch-stop T : 飽和基準。churn < T が epoch_patience回連続で停止
+      --epoch-peak F : 弱学習器基準。churnが観測ピークのF倍未満に減衰したら停止
+        (飽和を待たず「学習の山を越えたら」畳む。半煮えの層を量産して深さに
+        仕事をさせるブースティング的発想)
+    --epoch-peak-decay D は深さスケジュール: 層d(凍結済み層数)の実効F=F*D^d。
+    浅い層は早畳み・深い層ほど飽和まで粘る(F→0でchurn完全停止まで待つのと同等。
+    総深さは自動選択で事前に不明なので、地平線不要の指数減衰にしている)。
+    epoch_min前は判定しない(warm恒等層は序盤ほぼ変化ゼロ→活発化→減衰と
+    遅れて立ち上がるため、学習前の静かな谷での誤発火を防ぐ)。
+    どちらも0のときは None を返し、従来の固定エポックのまま(ビット等価)"""
+    if cfg.epoch_stop <= 0 and cfg.epoch_peak <= 0:
+        return None
+    f_eff = cfg.epoch_peak * (cfg.epoch_peak_decay ** d0)
+    state = {"prev": None, "hits": 0, "peak": 0.0}
+    @torch.no_grad()
+    def check(e):
+        if e < cfg.epoch_min or e % cfg.epoch_check != 0:
+            return False
+        sel = torch.cat([L.logits.argmax(-1) for L in win])
+        prev = state["prev"]
+        state["prev"] = sel
+        if prev is None:
+            return False
+        rate = (sel != prev).float().mean().item()
+        if cfg.epoch_peak > 0:
+            state["peak"] = max(state["peak"], rate)
+            fired = state["peak"] > 0 and rate < f_eff * state["peak"]
+        else:
+            fired = rate < cfg.epoch_stop
+        state["hits"] = state["hits"] + 1 if fired else 0
+        if state["hits"] >= cfg.epoch_patience:
+            print(f"    (epoch-stop: layer done at epoch {e}, rate={rate:.4f}"
+                  + (f", peak={state['peak']:.4f} F={f_eff:.3f}"
+                     if cfg.epoch_peak > 0 else "")
+                  + ")")
+            return True
+        return False
+    return check
 
 # ----------------------------- local objectives -----------------------------
 # greedyループ(run_greedy)は目的関数に依存しない骨格で、各objectiveが
@@ -196,6 +245,13 @@ class GroupSum:
                 + (" [residual]" if cfg.group_residual else "")
                 + (f" [boost={cfg.group_boost}]" if cfg.group_boost != 1.0 else "")
                 + (f" [warm-start={cfg.warm_start}]" if cfg.warm_start > 0 else "")
+                + (f" [epoch-peak={cfg.epoch_peak}"
+                   + (f" decay={cfg.epoch_peak_decay}"
+                      if cfg.epoch_peak_decay != 1.0 else "")
+                   + f" min={cfg.epoch_min} cap={cfg.epochs}]"
+                   if cfg.epoch_peak > 0 else
+                   f" [epoch-stop={cfg.epoch_stop} min={cfg.epoch_min}"
+                   f" cap={cfg.epochs}]" if cfg.epoch_stop > 0 else "")
                 + (f" [loss={cfg.group_loss}]" if cfg.group_loss != "ce" else "")
                 + (f" [window={cfg.window} commit={cfg.commit} loss={cfg.win_loss}]"
                    if cfg.window > 1 else ""))
@@ -249,7 +305,8 @@ class GroupSum:
                     terms.append(term(h))
                 pool = next_pool(h, X, pool, cfg)
             return (sum(terms) / len(terms) if cfg.win_loss == "all" else term(h))
-        fit(loss, len(self.pool_tr), cfg, cfg.seed * 1000 + d0 + 1, cfg.epochs, opt)
+        fit(loss, len(self.pool_tr), cfg, cfg.seed * 1000 + d0 + 1, cfg.epochs, opt,
+            stop_check=make_stop_check(win, cfg, d0))
     def commit(self, layers, L):
         """Lを離散化・凍結してプールをHARDビットで前進。(train, test)プローブを返す。
         residual時は累積スコアに当層の寄与を足し、プローブは累積で測る"""
@@ -681,7 +738,31 @@ def simplify(layers, Xte, yte, cfg):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--gates", type=int, default=500, help="gates per layer (multiple of 10)")
-    p.add_argument("--epochs", type=int, default=120, help="epochs per greedy layer")
+    p.add_argument("--epochs", type=int, default=120, help="epochs per greedy layer"
+                   " (upper bound when --epoch-stop is set)")
+    p.add_argument("--epoch-stop", type=float, default=0.0, metavar="T",
+                   help="adaptive epochs: stop a layer early once its gate-argmax"
+                        " (the discrete circuit) change-rate stays below T for"
+                        " --epoch-patience checks. 0 = off (fixed --epochs)."
+                        " --epochs is the upper bound. groupsum only.")
+    p.add_argument("--epoch-peak", type=float, default=0.0, metavar="F",
+                   help="weak-learner mode: stop a layer once its argmax change"
+                        "-rate decays below F x the peak rate seen so far (commit"
+                        " half-baked layers early, let depth do the work). 0 = off."
+                        " Overrides --epoch-stop. Try F=0.5 with --epoch-min 20.")
+    p.add_argument("--epoch-peak-decay", type=float, default=1.0, metavar="D",
+                   help="depth schedule for --epoch-peak: layer d uses F*D^d, so"
+                        " early layers fold fast (weak learners) and deeper layers"
+                        " train ever closer to saturation. 1.0 = constant F.")
+    p.add_argument("--epoch-min", type=int, default=70, metavar="M",
+                   help="do not stop before epoch M (protects warm-start identity"
+                        " layers: their churn dips in a quiet valley around epoch"
+                        " 30-60 before ramping up, and min=30 false-fired there --"
+                        " calibrated on digits, layers settle naturally at 140-190)")
+    p.add_argument("--epoch-check", type=int, default=5, metavar="K",
+                   help="check the argmax change-rate every K epochs")
+    p.add_argument("--epoch-patience", type=int, default=3, metavar="P",
+                   help="consecutive sub-threshold checks required to stop a layer")
     p.add_argument("--max-layers", type=int, default=8)
     p.add_argument("--patience", type=int, default=2)
     p.add_argument("--lr", type=float, default=0.05)
@@ -788,6 +869,8 @@ def main():
         p.error("--group-boost needs --group-residual")
     if cfg.warm_start > 0 and cfg.objective != "groupsum":
         p.error("--warm-start needs groupsum objective")
+    if (cfg.epoch_stop > 0 or cfg.epoch_peak > 0) and cfg.objective != "groupsum":
+        p.error("--epoch-stop/--epoch-peak need groupsum objective")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
