@@ -200,9 +200,11 @@ def main():
         p.error("--epoch-chain needs --epoch-stop (first-layer criterion)"
                 " and is exclusive with --epoch-peak")
     if cfg.recur > 1 and (cfg.skip_input or cfg.skip_all
-                          or cfg.objective != "groupsum" or cfg.carry):
+                          or cfg.objective != "groupsum" or cfg.carry
+                          or cfg.group_residual):
         p.error("--recur is no-skip + groupsum only (iteration needs the pool"
-                " width to equal --gates)")
+                " width to equal --gates), and exclusive with --group-residual"
+                " (readout semantics of intermediate iterates is unresolved)")
     if cfg.seq and (cfg.objective != "groupsum" or cfg.window > 1
                     or cfg.skip_input or cfg.skip_all or cfg.carry
                     or cfg.recur > 1 or cfg.group_residual):
@@ -262,13 +264,8 @@ def main():
     if not cfg.skip_e2e:
         e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte, cfg.e2e_depth or depth, cfg)
     # simplification is pure-Python graph rewriting -> always run on CPU.
-    # residual: readout sums EVERY layer's class bits, so dead-gate elimination
-    # (which prunes gates not feeding the LAST layer) would drop contributing
-    # gates. Skip until simplify treats all layers as outputs (future work).
-    if cfg.group_residual:
-        print("=== (C) simplification skipped (residual: all-layer readout) ===\n")
-        before = after = 0
-    elif cfg.seq:
+    # residual: simplifyが全層を出力扱いにするので検証込みで実行できる(2026-07-13)
+    if cfg.seq:
         # 時系列回路はレジスタ(状態)を含み、現簡略化器(組合せ回路前提)の対象外。
         # 時間展開しての検証は将来課題
         print("=== (C) simplification skipped (seq: sequential circuit with"

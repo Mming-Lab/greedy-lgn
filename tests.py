@@ -52,7 +52,9 @@ CASES = [
      {"greedy_hard_test_acc": 0.6022, "greedy_depth": 1}),
     ("residual + group-boost",
      "--gates 200 --epochs 30 --max-layers 4 --group-residual --group-boost 2 --skip-e2e",
-     {"greedy_hard_test_acc": 0.78, "greedy_depth": 4}),
+     {"greedy_hard_test_acc": 0.78, "greedy_depth": 4,
+      # residualのsimplify(全層出力対応、2026-07-13)のピン。等価assertも走る
+      "gates_before": 800, "gates_after_simplify": 639}),
     ("seq row-sequential + warm-start",
      "--gates 200 --epochs 30 --max-layers 4 --seq --warm-start 3 --skip-e2e",
      {"greedy_hard_test_acc": 0.5956, "greedy_depth": 4}),

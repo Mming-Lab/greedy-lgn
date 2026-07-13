@@ -8,7 +8,9 @@ from core import SWAP, f16, group_sum, accuracy
 def simplify(layers, Xte, yte, cfg):
     """Constant folding, pass-through/NOT reduction, duplicate merge,
     dead-gate elimination. Verifies the simplified circuit is bit-identical."""
-    print("=== (C) Logic simplification of the greedy hard network ===")
+    print("=== (C) Logic simplification of the greedy hard network ==="
+          + (" [residual: all layers are outputs]"
+             if getattr(cfg, "group_residual", False) else ""))
     in_bits, G, D = Xte.shape[1], cfg.gates, len(layers)
     tau = float(np.sqrt(G / cfg.n_class))
     net, base = [], in_bits
@@ -29,15 +31,27 @@ def simplify(layers, Xte, yte, cfg):
                     for i in range(G)])
         base += G
     total_before = D * G
-    final_ids = [g[0] for g in net[-1]]
+    # residual(--group-residual)は全層のクラスビット合算が予測なので、
+    # 全ゲートが回路の出力扱い(デッドゲート削除はほぼ無効化され、削減は
+    # 定数畳み込み・パススルー・重複マージのみになる — 主目的は検証)
+    residual = getattr(cfg, "group_residual", False)
+    out_ids = ([g[0] for l in net for g in l] if residual
+               else [g[0] for g in net[-1]])
+
+    def readout(mat):
+        # 残差=各層のGroupSumを層方向に合算(GroupSum.commitのaccumと同一式)
+        if not residual:
+            return group_sum(mat, cfg.n_class, tau)
+        return sum(group_sum(mat[:, k * G:(k + 1) * G], cfg.n_class, tau)
+                   for k in range(D))
 
     # reference evaluation
     vals = {i: Xte[:, i] for i in range(in_bits)}
     for layer in net:
         for gid, ia, ib, fn in layer:
             vals[gid] = f16(fn, vals[ia], vals[ib])
-    ref = torch.stack([vals[i] for i in final_ids], 1)
-    acc0 = accuracy(group_sum(ref, cfg.n_class, tau), yte)
+    ref = torch.stack([vals[i] for i in out_ids], 1)
+    acc0 = accuracy(readout(ref), yte)
 
     resolve = {}
     def res(n):
@@ -93,7 +107,7 @@ def simplify(layers, Xte, yte, cfg):
         kept.append(out)
 
     live = set()
-    for gid in final_ids:
+    for gid in out_ids:
         r = res(gid)
         if r[0] == 'node' and r[1] >= in_bits:
             live.add(r[1])
@@ -112,12 +126,12 @@ def simplify(layers, Xte, yte, cfg):
         for gid, ia, ib, fn in layer:
             vals2[gid] = f16(fn, vals2[ia], vals2[ib])
     cols = []
-    for gid in final_ids:
+    for gid in out_ids:
         r = res(gid)
         cols.append(torch.full((len(Xte),), float(r[1]))
                     if r[0] == 'const' else vals2[r[1]])
     out = torch.stack(cols, 1)
-    acc1 = accuracy(group_sum(out, cfg.n_class, tau), yte)
+    acc1 = accuracy(readout(out), yte)
     identical = torch.equal(ref, out)
 
     print(f"  gates: {total_before:,} -> {total_after:,}"
