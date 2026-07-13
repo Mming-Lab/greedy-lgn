@@ -340,7 +340,7 @@ The effect is large, and it holds on the arbiter:
 - **MNIST +16.5 pt over plain greedy, single 500-gate net, no skip, no window, no ensemble, in 96 s.** It *matches the previous repo MNIST best* (90.9%) — which needed 4,000-gate layers × 4 ensemble members (≈16× the gates plus voting). Residual reaches the scaled/ensemble flagship at a fraction of the inference area.
 - **Not overfitting**: digits drove train to 100% (450 test samples), but MNIST's 60k training set keeps train (91.9%) and test (90.6%) close. The digits train=100% was a small-dataset artifact.
 - **Why it works**: the plateau was never a supervision problem (each layer already sees the label) — the *answer* was discarded each layer. Accumulating it preserves the shallow layers' good predictions and lets deep layers only add corrections.
-- **Honest limitations**: (1) boosting / deep supervision is a standard idea; nothing here claims novelty, only that it fixes greedy-LGN's depth decay cleanly. (2) The readout reads all layers' class bits (a larger popcount), not just the last. (3) `simplify` currently prunes gates not feeding the *last* layer, which is wrong when every layer contributes; simplification is **skipped in residual mode** until it treats all layers as outputs. ce loss, window=1 in this first version.
+- **Honest limitations**: (1) the readout is plain boosting / deep supervision (standard ideas); the observation is only that it fixes greedy-LGN's depth decay cleanly. (2) The readout reads all layers' class bits (a larger popcount), not just the last. (3) `simplify` originally pruned gates not feeding the *last* layer and was skipped in residual mode; it now treats all layers as outputs and the residual circuits verify bit-exact (see the input-binarization section's champion run). ce loss, window=1 in this first version.
 - Idea proposed by the project owner, from the intuition "learning is accumulation — so don't throw the answer away."
 
 **Residual stacks with skip-input — new repo MNIST record.** Residual and skip both cure the depth decay, but by different mechanisms (residual accumulates the *answer*; skip re-exposes the *image*), so they compound:
@@ -449,8 +449,8 @@ layers deep per trained layer; `simplify` verifies the unrolled circuit
 bit-exact). **`--seq`** presents the image one row per step (digits: T=8,
 24 bits/step) and makes each layer a recurrent cell `s_t = L([x_t; s_{t-1}])`
 trained by BPTT over T steps — wiring (concat) and GroupSum readout follow
-RDDLGN ([arXiv:2508.06097](https://arxiv.org/abs/2508.06097)); no novelty is
-claimed. Frozen layers pass HARD state-bit sequences forward, so the
+RDDLGN ([arXiv:2508.06097](https://arxiv.org/abs/2508.06097)).
+Frozen layers pass HARD state-bit sequences forward, so the
 across-layer zero-gap property carries over (the within-layer temporal gap
 remains, as in RDDLGN's 5.00→4.39 BLEU).
 

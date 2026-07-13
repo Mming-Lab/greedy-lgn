@@ -69,7 +69,7 @@ Plain local training loses ~5 pt of accuracy to backprop — in exchange for zer
 
 ¹ skip alone is a depth/width-synergy lever — modest at 500-gate single net, and it actively *hurts* FF, so it isn't a fixed-budget winner. ² `mix` negatives. ³ `review` + 0.5 warm-up. ⁴ at depth 38 (still slowly climbing); residual-alone 90.9% converges at depth 9. ⁵ 94.08% at depth 27 — *shallower, smaller (11,005 simplified gates vs 13,711) and faster than the control*, and the first flagship number that is **bit-exactly verified** through simplification; same-protocol control 93.82@34 (single seed, so the +0.26 pt is within possible run noise — the area/depth win is not).
 
-**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last, which is exactly why accuracy decays with depth (shallow layers see fresh image info, but their good answers are discarded). Accumulate each layer's prediction instead — plain boosting — and the decay vanishes: MNIST climbs from 74.3% to **90.9%** (single 500-gate net, no skip/window/ensemble, not overfitting: train 91.9 / test 90.6). That already matches the scaling-track flagship below (4,000 gates × 4 ensemble) at a fraction of the area. Stacking `--skip-input` on top — residual accumulates the *answer*, skip re-exposes the *image*, different cures for the same decay — compounds to **93.9%**, a new repo record, still at 500 gates single net (honest cost: depth grows 9 → 38, i.e. more latency). Boosting/deep-supervision is a standard idea — no novelty claimed; it just fixes greedy-LGN's depth decay cleanly. [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes)
+**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last, which is exactly why accuracy decays with depth (shallow layers see fresh image info, but their good answers are discarded). Accumulate each layer's prediction instead — plain boosting — and the decay vanishes: MNIST climbs from 74.3% to **90.9%** (single 500-gate net, no skip/window/ensemble, not overfitting: train 91.9 / test 90.6). That already matches the scaling-track flagship below (4,000 gates × 4 ensemble) at a fraction of the area. Stacking `--skip-input` on top — residual accumulates the *answer*, skip re-exposes the *image*, different cures for the same decay — compounds to **93.9%**, a new repo record, still at 500 gates single net (honest cost: depth grows 9 → 38, i.e. more latency). The readout is plain boosting / deep supervision — the observation here is just that it fixes greedy-LGN's depth decay cleanly. [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes)
 
 ## Off the main track: scaling levers
 
@@ -182,7 +182,7 @@ MIT
 
 素のgreedyはend-to-end逆伝播に約5pt負けます(88.2% vs 93.6%)が、代わりに離散化ギャップが構造的にゼロ・学習メモリが深さ分の1・深さの自動決定という利点があります。主な観察:
 
-- **残差readout**(`--group-residual`): 各層のクラススコアを凍結層の累積に足し、各層は残差だけ学習(予測は全層のビット総和=純論理回路のまま)。深さ劣化が消えてMNIST 74.3→90.9%、+skipで93.9%。ブースティング/deep supervisionは既存の考え方で新規性は主張しません
+- **残差readout**(`--group-residual`): 各層のクラススコアを凍結層の累積に足し、各層は残差だけ学習(予測は全層のビット総和=純論理回路のまま)。深さ劣化が消えてMNIST 74.3→90.9%、+skipで93.9%。読み出しは素朴なブースティング/deep supervision(標準的な既存手法)の適用です
 - **深さ耐性**: 逆伝播は12層でチャンスレベル(10%)に崩壊、greedyは40層目でも学習が成立。ただしskipなしでは深さが精度に貢献しない
 - **skip connections**(`--skip-input`): ゲートを増やさず配線だけで深さ劣化を解消(88.2%@4 → 90.4%@8)。ただしFFには逆効果
 - **恒等warm-start**(`--warm-start`): 新層を「前層出力の再現」から初期化(論理ゲート版のResNet恒等ブロック)。素のgreedyで先読み窓を+4pt上回り実質引退させた。ただし残差の代替にはならない(治す病が同じ)
