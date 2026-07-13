@@ -89,7 +89,7 @@ Wider layers (`--gates`) and ensembles (`--ensemble`) buy accuracy by spending c
 | Identity warm-start (`--warm-start`) | init each layer to reproduce the previous one (ResNet identity block in logic gates), then refine. **Retires the lookahead window**: on plain greedy digits, 94.5% vs the window's 90.4% (3 seeds), and keeps depth productive to 15 layers. Beats the window by ~+11 pt on MNIST too, but single-seed MNIST is noisy (~4 pt) and it stays **below the residual champion** — its value is fixing *plain* greedy, not replacing residual. `--group-boost` (AdaBoost-style reweighting on residual) is a modest +0.43 pt on MNIST | [→](RESULTS.md) |
 | Adaptive per-layer epochs (`--epoch-stop` / `--epoch-chain`) | stop each layer when its gate-argmax churn settles, instead of a fixed 120. **Honest negative result**: no variant beats fixed 120 — churn half-decays at ~125 epochs, so 120 was already near-optimal. `--epoch-chain 2` ties it with 5× lower variance. Finding: fully settling a layer *stalls* depth growth (per-layer convergence isn't the goal) | [→](RESULTS.md) |
 | Recursion (`--recur`, `--seq`) | weight-tied recursion — `--recur K` iterates a layer K times (parameter compression); `--seq` is RDDLGN-style temporal recurrence (one image row per step, BPTT, `s_t = L([x_t; s_{t-1}])`). Both **collapse from random init and are rescued by identity warm-start**; `--seq` on digits reaches 0.912 (3 seeds) seeing 24 bits/step. Unifying finding: recursing discrete logic needs a near-identity map pointing at *informative* bits (matches RDDLGN's Residual-init requirement). MNIST `--seq` deferred (28-step BPTT too slow interactively) | [→](RESULTS.md) |
-| Input binarization (`--thresholds`) | the diagnosis (dead bits, thresholds below quantiles) said *raise* them — the data said the opposite: quantile thresholds lose, **adding a lower plane wins**: MNIST residual 89.96 → **90.71%** (3/3 seeds, +0.75 pt, upstream lever, no extra gates). Champion-config stack check pending | [→](RESULTS.md) |
+**Upstream of the arena — preprocessing, not a learning idea**: input binarization (`--thresholds`). The diagnosis (dead bits, thresholds below quantiles) said *raise* them — the data said the opposite: quantile thresholds lose, **adding a lower plane wins** (MNIST residual 89.96 → 90.71%, 3/3 seeds, and it feeds the verified 94.08% record). A data-representation lever that transfers to any method, so it is credited separately from the method ideas. [→](RESULTS.md)
 
 **Scaling track — reference** (width / ensembles / bigger budgets, parked):
 
@@ -195,10 +195,11 @@ MIT
 | 恒等warm-start(`--warm-start`) | 新しい層をゼロから作らず「前の層の完コピ」から微調整で始める | 先読み窓を+4pt圧倒して引退させた [→](RESULTS.md) |
 | 適応エポック(`--epoch-stop`等) | 伸びが止まった層は早めに切り上げる | **負け**: 固定120が偶然ほぼ最適だった [→](RESULTS.md) |
 | 再帰(`--recur` / `--seq`) | 同じ層を使い回す/画像を1行ずつ流して「記憶」で読む | 恒等初期化がないと崩壊、seqはdigits 91.2% [→](RESULTS.md) |
-| 入力二値化(`--thresholds`) | 画素を白黒に割るしきい値の調整。薄い筆致を拾う低いしきい値を足すのが正解だった。※これだけ**学習の工夫でなく前処理**(どの手法にも効く上流レバーで、手法の手柄とは区別) | +0.75pt、**最高記録94.08%に寄与** [→](RESULTS.md) |
 | 畳み込み配線(`--local` / `--conv`、進行中) | 近くの画素だけ見る配線(単体では**負け**)→ 重み共有カーネル+プーリングの本物の畳み込みへ | digitsで密と同点まで、MNIST判定待ち [→](RESULTS.md) |
 
-**スケーリング側(参考、[SCALING.md](SCALING.md))**: メモリ等価比較(学習メモリを揃えるとgreedyがe2eに全勝 95.0 vs 91.5)/アンサンブル投票(`--ensemble`、独立回路を並べて多数決 — digits 96.4%)/MNISTスケーリング(幅が支配的レバー、90.9%)。
+**本線の外のレバー**(学習アイデアの勝負とは別枠):
+- **前処理 — 入力二値化(`--thresholds`)**: 画素を白黒に割るしきい値の調整。薄い筆致を拾う低いしきい値を足すのが正解で、+0.75pt・**最高記録94.08%に寄与**。学習の工夫ではなくデータ表現の改善なので、どの手法にも効く=手法の手柄とは区別して数える [→](RESULTS.md)
+- **スケーリング**(参考、[SCALING.md](SCALING.md)): 計算資源=推論回路面積で精度を買う側。メモリ等価比較(学習メモリを揃えるとgreedyがe2eに全勝 95.0 vs 91.5)/アンサンブル投票(`--ensemble`、独立回路を並べて多数決 — digits 96.4%)/MNISTスケーリング(幅が支配的、90.9%)
 
 **その他の死にレバー**(正直な記録 — いずれも既存フラグの設定変更・組合せで実測した負け): エポック増(`--epochs`2倍で+0.1pt)、window×幅・window×skip(組合せが加算されない)、warmupなしのhard負例(`--ff-neg hard`単体は崩壊)、分位点閾値(`--thresholds q3〜q5`は負け — 診断は「上げろ」、データは「低い面を足せ」だった)。
 
