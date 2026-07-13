@@ -180,18 +180,27 @@ MIT
 
 **スケーリングレバー**(幅=`--gates` とアンサンブル=`--ensemble`)は別トラック(参考、[SCALING.md](SCALING.md))です。計算資源=推論回路面積を突っ込めば確実に精度を買えますが、アイデアの良し悪しは分かりません。参考値: digits 96.4%(2,000ゲート+skip+×4多数決)、MNIST 90.9%(4,000ゲート+skip+×4 soft vote)。**残差readoutは単発500ゲートでこのMNIST旗艦に並び、+skipで超えました**。このトラックは休止中です。
 
-素のgreedyはend-to-end逆伝播に約5pt負けます(88.2% vs 93.6%)が、代わりに離散化ギャップが構造的にゼロ・学習メモリが深さ分の1・深さの自動決定という利点があります。主な観察:
+素のgreedyはend-to-end逆伝播に約5pt負けます(88.2% vs 93.6%)が、代わりに離散化ギャップが構造的にゼロ・学習メモリが深さ分の1・深さの自動決定という利点があります。
 
-- **残差readout**(`--group-residual`): 各層のクラススコアを凍結層の累積に足し、各層は残差だけ学習(予測は全層のビット総和=純論理回路のまま)。深さ劣化が消えてMNIST 74.3→90.9%、+skipで93.9%。読み出しは素朴なブースティング/deep supervision(標準的な既存手法)の適用です
-- **深さ耐性**: 逆伝播は12層でチャンスレベル(10%)に崩壊、greedyは40層目でも学習が成立。ただしskipなしでは深さが精度に貢献しない
-- **skip connections**(`--skip-input`): ゲートを増やさず配線だけで深さ劣化を解消(88.2%@4 → 90.4%@8)。ただしFFには逆効果
-- **恒等warm-start**(`--warm-start`): 新層を「前層出力の再現」から初期化(論理ゲート版のResNet恒等ブロック)。素のgreedyで先読み窓を+4pt上回り実質引退させた。ただし残差の代替にはならない(治す病が同じ)
-- **再帰**(`--recur`=層内反復 / `--seq`=RDDLGN型の時系列状態): どちらも**ランダム初期化では崩壊し、恒等warm-startで救済**される。「離散論理の再帰は恒等に近い写像が前提で、恒等の向き(情報のあるビットを指すか)が本質」が3経路で一致した今回の主発見。`--seq`は毎ステップ24ビットしか見ずにdigits 91.2%(静的な素88.4%超え)
-- **先読み窓**(`--window 2`): 近視由来のギャップの約2/3を回収 — したが、warm-startに役目を奪われました
-- **Forward-Forward**(`--objective ff`): goodnessがpopcountに退化し推論まで純論理回路。負例マイニング込みでMNIST 82.0%(残差以前の固定予算最高値)
-- **メモリ等価比較**: 学習float予算を揃えるとgreedyがe2eに3シード全勝(95.0% vs 91.5%)
-- **アンサンブル投票**(`--ensemble M`): 他の全レバーと加算。ただし推論面積を揃えると幅の直接拡大に負ける(正直な限界)
-- **死にレバー**: エポック増、window×幅、window×skip、warmupなしのhard負例(崩壊)、**適応エポック**(固定120が偶然ほぼ最適だった — churnの半減点が~125エポック)、**分位点閾値**(診断は「閾値を上げろ」、データは「低い面を足せ」だった)
+**実験一覧(本線=固定予算のアイデア勝負)** — 詳細は各リンク先:
+
+| 実験(フラグ) | 一言でいうと | 結果 |
+|---|---|---|
+| 残差readout(`--group-residual`) | 各層の答えを捨てずに積み上げていく(素朴なブースティング)。「答えの積み重ね=学習」 | **MNIST 74.3→90.9%、現在のchampの土台** [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes) |
+| 深さ耐性テスト | 何層まで学習できるか力比べ。逆伝播は12層で沈没、greedyは40層でも学べる(ただし精度は別) | greedyの生存を確認 [→](RESULTS.md#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12) |
+| skip配線(`--skip-input`) | どの層にも元画像を見せ直す。深さで劣化しなくなる | 88.2→90.4%、champに+3pt寄与 [→](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth) |
+| 先読み窓(`--window`) | 1層ずつでなく2層先まで見てから確定(近視の緩和) | +2pt — 今はwarm-startに役目を譲った [→](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap) |
+| Forward-Forward(`--objective ff`) | 「正しいラベルを重ねた画像では発火を増やし、偽ラベルでは減らす」学習。推論まで純論理回路 | MNISTで素より+2.5pt [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
+| 誤答の重点復習(`--ff-neg`) | まず普通に学習→模試→間違えた問題を重点復習(人間の勉強法と同じ発想) | MNIST 82.0%(残差以前の最高値) [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
+| 恒等warm-start(`--warm-start`) | 新しい層をゼロから作らず「前の層の完コピ」から微調整で始める | 先読み窓を+4pt圧倒して引退させた [→](RESULTS.md) |
+| 適応エポック(`--epoch-stop`等) | 伸びが止まった層は早めに切り上げる | **負け**: 固定120が偶然ほぼ最適だった [→](RESULTS.md) |
+| 再帰(`--recur` / `--seq`) | 同じ層を使い回す/画像を1行ずつ流して「記憶」で読む | 恒等初期化がないと崩壊、seqはdigits 91.2% [→](RESULTS.md) |
+| 入力二値化(`--thresholds`) | 画素を白黒に割るしきい値の調整。薄い筆致を拾う低いしきい値を足すのが正解だった | +0.75pt、**champ 94.08%に寄与** [→](RESULTS.md) |
+| 畳み込み配線(`--local` / `--conv`、進行中) | 近くの画素だけ見る配線(単体では**負け**)→ 重み共有カーネル+プーリングの本物の畳み込みへ | digitsで密と同点まで、MNIST判定待ち [→](RESULTS.md) |
+
+**スケーリング側(参考、[SCALING.md](SCALING.md))**: メモリ等価比較(学習メモリを揃えるとgreedyがe2eに全勝 95.0 vs 91.5)/アンサンブル投票(`--ensemble`、独立回路を並べて多数決 — digits 96.4%)/MNISTスケーリング(幅が支配的レバー、90.9%)。
+
+**その他の死にレバー**(正直な記録): エポック増、window×幅、window×skip、warmupなしのhard負例(崩壊)、分位点閾値(診断は「上げろ」、データは「低い面を足せ」だった)。
 
 各実験のセットアップ・数値表・**反証された仮説**は [RESULTS.md](RESULTS.md)(スケーリング系は [SCALING.md](SCALING.md))に、生ログは実験ごとの個別issue(#1〜#11、各セクションからリンク)にあります。回路の中身を覗く診断ツール([diagnose.py](diagnose.py)=ゲート種類分布・機能的冗長度、[dynamics.py](dynamics.py)=学習済み再帰セルの発振器census)もあります。
 
