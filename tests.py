@@ -42,6 +42,20 @@ CASES = [
      "--skip-e2e --objective ff --ff-label-rep 38 --window 2 --commit 2"
      " --ff-neg review --ff-neg-warmup 0.5",
      {"greedy_hard_test_acc": 0.9022, "greedy_depth": 6}),
+    # 2026-07-13 追加分。高速なgates 200予算でコードパスをピン(値自体は小さい
+    # 設定のもので、READMEの500ゲートの数字とは別物 — 目的は回帰の壊れ検出)。
+    ("warm-start identity init",
+     "--gates 200 --epochs 30 --max-layers 4 --warm-start 5 --skip-e2e",
+     {"greedy_hard_test_acc": 0.6511, "greedy_depth": 4}),
+    ("recur 2 (within-layer iteration)",
+     "--gates 200 --epochs 30 --max-layers 4 --recur 2 --skip-e2e",
+     {"greedy_hard_test_acc": 0.6022, "greedy_depth": 1}),
+    ("residual + group-boost",
+     "--gates 200 --epochs 30 --max-layers 4 --group-residual --group-boost 2 --skip-e2e",
+     {"greedy_hard_test_acc": 0.78, "greedy_depth": 4}),
+    ("seq row-sequential + warm-start",
+     "--gates 200 --epochs 30 --max-layers 4 --seq --warm-start 3 --skip-e2e",
+     {"greedy_hard_test_acc": 0.5956, "greedy_depth": 4}),
 ]
 
 
