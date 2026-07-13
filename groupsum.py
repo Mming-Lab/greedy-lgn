@@ -27,11 +27,20 @@ class GroupSum:
         if cfg.group_residual:
             self.accum_tr = torch.zeros(len(ytr), cfg.n_class, device=cfg.device)
             self.accum_te = torch.zeros(len(yte), cfg.n_class, device=cfg.device)
+        # --local: 位置の帳簿。入力ビットの画素位置は plane*npix+pixel → idx%npix。
+        # プール前進とともに更新する(層出力の位置=そのゲートの割当位置)
+        if getattr(cfg, "local", 0) > 0:
+            self._w, self._npix = (8, 64) if cfg.dataset == "digits" else (28, 784)
+            self.pos_input = [i % self._npix for i in range(Xtr.shape[1])]
+            self.pos_pool = list(self.pos_input)
+            self._pending_pos = None
     def header(self):
         cfg = self.cfg
         return ("=== (A) Greedy layer-wise: local loss -> discretize -> freeze ==="
                 + (" [residual]" if cfg.group_residual else "")
                 + (f" [recur={cfg.recur}]" if cfg.recur > 1 else "")
+                + (f" [local={cfg.local}]"
+                   if getattr(cfg, "local", 0) > 0 else "")
                 + (f" [boost={cfg.group_boost}]" if cfg.group_boost != 1.0 else "")
                 + (f" [warm-start={cfg.warm_start}]" if cfg.warm_start > 0 else "")
                 + (f" [epoch-peak={cfg.epoch_peak}"
@@ -48,11 +57,45 @@ class GroupSum:
                    if cfg.window > 1 else ""))
     def begin(self, layers, d0):   # 窓学習の準備。窓の入力次元を返す
         return self.pool_tr.shape[1]
+    def _local_wires(self, in_dim, d0, k):
+        """--local K: 各ゲートに画素位置を割り当て、K×K近傍のプールビットから
+        2入力を抽選する(畳み込み配線のPhase 1=局所性の事前分布のみ、重み共有なし)。
+        ゲート位置はランダム割当 — GroupSumのクラス群(ゲート番号順)と位置の相関を
+        切るため(等間隔割当だとクラス0が画像上部しか見えない)。warm併用時は
+        前層のゲート位置を継承(恒等=前層コピーの意味論と整合)。
+        近傍に候補が無ければ窓を1ずつ広げる(MNISTでG<npixのため)"""
+        cfg = self.cfg
+        w, npix, G = self._w, self._npix, cfg.gates
+        g = torch.Generator().manual_seed(cfg.seed * 400 + d0 + k + 1)
+        buckets = [[] for _ in range(npix)]
+        for i, p in enumerate(self.pos_pool):
+            buckets[p].append(i)
+        if cfg.warm_start > 0 and (d0 + k) > 0:
+            gpos = list(self.pos_pool[-G:])     # 前層ゲート位置を継承(プール末尾)
+        else:
+            gpos = torch.randint(0, npix, (G,), generator=g).tolist()
+        ia, ib = [], []
+        for gi in range(G):
+            r0, c0 = divmod(gpos[gi], w)
+            rad = cfg.local // 2
+            cand = []
+            while not cand:                     # 空窓なら拡張
+                cand = [j for r in range(max(0, r0 - rad), min(w, r0 + rad + 1))
+                        for c in range(max(0, c0 - rad), min(w, c0 + rad + 1))
+                        for j in buckets[r * w + c]]
+                rad += 1
+            ia.append(cand[int(torch.randint(len(cand), (1,), generator=g))])
+            ib.append(cand[int(torch.randint(len(cand), (1,), generator=g))])
+        self._pending_pos = gpos
+        return torch.tensor(ia), torch.tensor(ib)
     def make_layer(self, in_dim, d0, k):
         # 前層があるとき(d0+k>0)だけ恒等warm-start。最初の層は前層が無いので素のまま
         warm = self.cfg.warm_start if (d0 + k) > 0 else 0.0
+        wires = (self._local_wires(in_dim, d0, k)
+                 if getattr(self.cfg, "local", 0) > 0 else None)
         return LogicLayer(in_dim, self.cfg.gates,
-                          seed=self.cfg.seed * 100 + d0 + k + 1, warm=warm)
+                          seed=self.cfg.seed * 100 + d0 + k + 1, warm=warm,
+                          wires=wires)
     def train(self, win, layers, d0):
         """窓内W層をsoftのまま共同学習(receding horizonの1ステップ)。
         損失は窓の最終層のCE(--win-loss last)か全層平均(--win-loss all)。
@@ -119,6 +162,11 @@ class GroupSum:
         a_tr = accuracy(s_tr, self.ytr)
         self.pool_tr = next_pool(h_tr, self.X, self.pool_tr, cfg)
         self.pool_te = next_pool(h_te, self.Xte, self.pool_te, cfg)
+        # --local: プール位置も同じ規則で前進(no-skip=ゲート位置のみ、
+        # skip-input=[入力位置 || ゲート位置])
+        if getattr(cfg, "local", 0) > 0:
+            self.pos_pool = (self.pos_input + self._pending_pos
+                             if cfg.skip_input else list(self._pending_pos))
         return a_tr, a_te
     @torch.no_grad()
     def counts(self, layers, X, y):

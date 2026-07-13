@@ -524,3 +524,26 @@ simplified circuit is confirmed bit-identical to the trained network (the old
 over the control is within plausible run-to-run noise — the residual-alone
 evidence (+0.75, 3/3 seeds) is what makes the direction trustworthy; the
 depth/area/time win stands regardless of the accuracy noise.
+
+## Convolutional wiring, phase 1 (`--local`): a locality prior alone just starves the net (negative)
+
+First step toward convolutional wiring: keep everything else and only change
+the wiring prior — every gate gets a pixel position and draws its two inputs
+from the K×K neighbourhood of the pool (inputs at their pixel, previous gates
+at their assigned position; gate positions random so they stay uncorrelated
+with the GroupSum class groups, or inherited under `--warm-start`). No weight
+sharing, no pooling.
+
+digits said yes, the referee said no — the sharpest digits/MNIST reversal so
+far (residual, seed 1): digits +0.4 pt (local3) / +0.7 pt (local5), but MNIST
+**87.89 (−2.25)** at local3 and 89.90 (−0.24) at local5 vs 90.14 baseline. The
+mechanism is clean: a 3×3 window covers 14% of an 8×8 image but 1.1% of 28×28,
+and without pooling the receptive field grows only with depth (3×3 over the
+residual's natural depth 8 ≈ 17×17 < 28×28) — no gate ever sees the whole
+digit. Widening the window recovers most of the loss, confirming the reading.
+**Locality alone is an information restriction**: it takes away the long-range
+mixing that global random wiring provided for free, and gives nothing back.
+The convolutional benefits (weight sharing = more effective samples per
+parameter, pooling = growing receptive field) are exactly the parts this
+phase left out — so this negative sharpens the phase-2 hypothesis rather than
+killing the direction.

@@ -174,6 +174,16 @@ def main():
     p.add_argument("--dataset", choices=["digits", "mnist"], default="digits",
                    help="digits: sklearn 8x8 (CPU-friendly). mnist: 28x28, 70k"
                         " samples (GPU + --batch recommended)")
+    p.add_argument("--local", type=int, default=0, metavar="K",
+                   help="convolutional wiring, phase 1 (locality prior only, no"
+                        " weight sharing): every gate gets a pixel position and"
+                        " draws its two inputs from the K x K neighbourhood of the"
+                        " pool (inputs at their pixel, previous gates at their"
+                        " assigned position; gate positions are random to stay"
+                        " uncorrelated with the GroupSum class groups, or inherited"
+                        " from the previous layer under --warm-start). 0 = off,"
+                        " original global random wiring. groupsum + window=1 only;"
+                        " --skip-input supported, --skip-all/--recur/--seq not.")
     p.add_argument("--thresholds", type=str, default=None, metavar="SPEC",
                    help="input binarization override: \"5,10,15\" = absolute"
                         " thermometer thresholds, \"q4\" = 4 planes at evenly"
@@ -210,6 +220,11 @@ def main():
                     or cfg.recur > 1 or cfg.group_residual):
         p.error("--seq is groupsum + window=1 + no-skip only (no recur/residual"
                 " combination yet)")
+    if cfg.local > 0 and (cfg.objective != "groupsum" or cfg.window > 1
+                          or cfg.skip_all or cfg.carry or cfg.recur > 1
+                          or cfg.seq):
+        p.error("--local is groupsum + window=1 only (skip-input OK;"
+                " skip-all/carry/recur/seq not yet)")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 

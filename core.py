@@ -39,12 +39,17 @@ class LogicLayer(nn.Module):
     構造化モード(FFのラベル×ラベル無駄ゲート対策)。主ドロー(ia/ib/logits)を
     従来順で引いた後に別ジェネレータで一部を上書きするので、struct=None または
     frac=0 のとき従来とビット単位で一致する。"""
-    def __init__(self, in_dim, n_gates, seed, struct=None, warm=0.0):
+    def __init__(self, in_dim, n_gates, seed, struct=None, warm=0.0, wires=None):
         super().__init__()
         g = torch.Generator().manual_seed(seed)
         ia = torch.randint(0, in_dim, (n_gates,), generator=g)
         ib = torch.randint(0, in_dim, (n_gates,), generator=g)
         logits = torch.randn(n_gates, 16, generator=g)
+        # wires=(ia, ib): 配線の外部指定(--local の局所配線など)。主ドローの後に
+        # 上書きするので wires=None のとき従来とビット単位で一致する。
+        # warm(恒等)より先に適用 — warm併用時は ia が恒等に再上書きされ ib が残る
+        if wires is not None:
+            ia, ib = wires[0].clone(), wires[1].clone()
         # warm>0: 恒等初期化。前層出力h(プール末尾n_gates本 — no-skip/skip共通)を
         # gate A のパススルーで再現し、logitをAに強さwarmだけ偏らせる。新層は前層を
         # 壊さない状態から残差だけ微調整して始まる(ResNetの恒等ブロック初期化)。
