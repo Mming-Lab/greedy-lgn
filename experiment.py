@@ -23,7 +23,8 @@ Regression: any change to these modules must keep every number in tests.py
 exact (`python tests.py`). The published results depend on bit-exact
 reproducibility.
 """
-import argparse, json
+import argparse, json, os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))  # 実装はsrc/
 import numpy as np
 import torch
 from core import load_data, reps

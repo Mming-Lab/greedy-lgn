@@ -1,6 +1,6 @@
 # Scaling track (reference, off the main track)
 
-The [README](README.md) and [RESULTS.md](RESULTS.md) main track holds everything to a **fixed budget — 500 gates/layer, single network** — because the game there is which *ideas* move the accuracy points. This file collects the **scaling levers**: wider layers (`--gates`) and ensembles of independent nets (`--ensemble`). They spend compute and inference-circuit area, and reliably buy accuracy — but they don't tell you which idea is any good, so they sit outside the arena. This track is parked; it gets revisited only when a fixed-budget winner deserves a one-off scale check.
+The [README](../README.md) and [RESULTS.md](RESULTS.md) main track holds everything to a **fixed budget — 500 gates/layer, single network** — because the game there is which *ideas* move the accuracy points. This file collects the **scaling levers**: wider layers (`--gates`) and ensembles of independent nets (`--ensemble`). They spend compute and inference-circuit area, and reliably buy accuracy — but they don't tell you which idea is any good, so they sit outside the arena. This track is parked; it gets revisited only when a fixed-budget winner deserves a one-off scale check.
 
 For reference, where the scaling levers take the same pipeline:
 

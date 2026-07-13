@@ -4,7 +4,8 @@
 (b) 機能的冗長度: hard回路で各ゲートの出力ビット列(テスト集合上)を見て、
     定数列(dead)・他ゲートと同一/相補(complement)な列の割合を数える。
 W=1の素のgreedyループを再現(--group-residual等のモードは付けない素の診断)。"""
-import sys, argparse, types
+import sys, os, argparse, types
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))  # 実装はsrc/
 import numpy as np
 import torch
 from core import load_data, group_sum, accuracy, hard_batched, next_pool, GATE_NAMES

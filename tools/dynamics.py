@@ -7,7 +7,8 @@
 hardビットの有限状態機械なので軌道は必ず最終的に周期的。問いは
 「学習がどんな周期を作ったか」と「データ由来の状態から何ステップで安定するか」。
 experiment.py非改変の独立診断。"""
-import argparse, types
+import argparse, types, os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))  # 実装はsrc/
 import numpy as np
 import torch
 from core import load_data, hard_batched

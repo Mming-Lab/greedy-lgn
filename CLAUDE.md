@@ -171,21 +171,29 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
   (seed2は深く伸びた)。確実な主張は精度+0.55ptのみ(残差単体+0.75と整合)
 
 ## ファイル
-2026-07-12にモジュール分割(純粋なコード移動、CLI・全数値ビット等価を回帰で確認):
-- experiment.py : CLI入口(argparse+main のみ)。既存コマンドは全て不変
-- core.py      : 共有基盤(16ゲート、LogicLayer、load_data、fit、適応エポック停止判定)
-- groupsum.py  : GroupSum目的(主線)。residual/boost/warm-startはこの中のモード
-- ff.py        : Forward-Forward目的(負例マイニング・構造化配線含む)
-- greedy.py    : 手法本体(run_greedy + make_objective)
-- scaling.py   : オフトラックのスケーリングレバー(アンサンブル投票、SCALING.md対応)
-- e2e.py       : 逆伝播ベースライン
-- simplify.py  : 論理簡略化+ビット等価検証
-- seq.py       : row-sequential再帰(--seq、RDDLGN型の時系列状態。2026-07-13追加)
-- WHITEPAPER.md: 読み物（探検記）Vol.1「94%までの軌跡」。英語本体+日本語アブスト
-                 1段落。新規性非主張トーン。2026-07-14作成。看板数値は3シード94.27%
-- README.md    : 英語本体+日本語概要。要点サマリ+RESULTS.mdへのリンク集に圧縮済み
-- RESULTS.md   : 実験詳細の本体(セットアップ・数値表・反証された仮説)。
-                 今後の実験結果はREADMEでなくここに追記する
+2026-07-12にモジュール分割、2026-07-14に src/tools/docs へフォルダ整理
+(いずれも純粋な移動、CLI・全数値ビット等価を回帰で確認。importはRNG・数値に
+不干渉なのでフォルダ移動で結果は不変、experiment.pyがsrc/をsys.pathに追加)。
+- experiment.py : (ルート)CLI入口(argparse+main のみ)。呼び出しは全て不変
+- tests.py      : (ルート)回帰スイート。`python experiment.py`をサブプロセス起動
+- src/core.py      : 共有基盤(16ゲート、LogicLayer、load_data、fit、適応エポック停止)
+- src/groupsum.py  : GroupSum目的(主線)。residual/boost/warm-start/localはモード
+- src/ff.py        : Forward-Forward目的(負例マイニング・構造化配線含む)
+- src/greedy.py    : 手法本体(run_greedy + make_objective)
+- src/scaling.py   : オフトラックのスケーリングレバー(アンサンブル投票)
+- src/e2e.py       : 逆伝播ベースライン
+- src/simplify.py  : 論理簡略化+ビット等価検証(残差の全層読み出しにも対応)
+- src/seq.py       : row-sequential再帰(--seq、RDDLGN型の時系列状態)
+- src/conv.py      : 畳み込み論理層(--conv、重み共有カーネル+ORプーリング、
+                     16→4基底+勾配checkpoint+hardチャンク予算でMNISTが6GBに収まる)
+- tools/diagnose.py: 回路診断(触られ率・機能的冗長度・ゲート種類分布)
+- tools/dynamics.py: 学習済み再帰セルの力学系census(発振器・固定点)
+- WHITEPAPER1.md: (ルート)読み物(探検記)Vol.1「94%までの軌跡」。英語本体+
+                 日本語アブスト1段落。新規性非主張トーン。看板は3シード94.27%
+- README.md    : (ルート)英語本体+日本語概要。要点+docs/へのリンク集に圧縮済み
+- docs/RESULTS.md : 実験詳細の本体(セットアップ・数値表・反証された仮説)。
+                    今後の実験結果はREADMEでなくここに追記する
+- docs/SCALING.md : スケーリング系(幅・アンサンブル)の詳細
 - requirements.txt, LICENSE(MIT, 著作権者名は要確認)
 
 ## 直近のタスク(優先順)

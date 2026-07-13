@@ -113,7 +113,7 @@ python experiment.py --dataset mnist --batch 512 --group-residual --skip-input -
 python tests.py                                                   # regression: pinned, bit-exact
 ```
 
-Full setups, number tables, and disproven hypotheses live in [RESULTS.md](RESULTS.md) (scaling levers in [SCALING.md](SCALING.md)); per-experiment raw logs are one GitHub issue each.
+Full setups, number tables, and disproven hypotheses live in [RESULTS.md](docs/RESULTS.md) (scaling levers in [SCALING.md](docs/SCALING.md)); per-experiment raw logs are one GitHub issue each.
 
 ---
 

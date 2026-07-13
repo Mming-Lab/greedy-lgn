@@ -1,6 +1,6 @@
 # Detailed experimental results
 
-Full write-ups of every experiment in this repo. The [README](README.md) carries the
+Full write-ups of every experiment in this repo. The [README](../README.md) carries the
 headline numbers; this file carries the setups, tables, caveats, and the hypotheses
 that did *not* survive contact with the data. Full run logs (environment, commands,
 raw output) live in **one GitHub issue per experiment**, linked at the end of each
