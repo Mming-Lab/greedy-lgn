@@ -504,26 +504,27 @@ wiring pool. Honest caveat: the published residual-alone 90.86% was a single
 draw from an earlier session — the claim here is the same-protocol 3-seed
 comparison (89.96 → 90.71), not "beats 90.86".
 
-**Champion config check — new repo record, and the first verified one.**
-Stacking the low plane on the champion (residual + `--skip-input`, cap 40,
-seed 1, run side-by-side with a same-protocol control):
+**Champion config check — new repo record, verified, 3 seeds.** Stacking the
+low plane on the champion (residual + `--skip-input`, cap 40), each seed run
+side-by-side with a same-protocol control:
 
-| residual + skip, MNIST seed 1 | control (63,127,191) | + low plane (31,63,127,191) |
+| residual + skip, MNIST | control (63,127,191) | + low plane (31,63,127,191) |
 |---|---|---|
-| hard test acc | 93.82% @ depth 34 | **94.08% @ depth 27** |
-| raw / simplified gates | 17,000 / 13,711 | **13,500 / 11,005** |
-| training time | 46 min | **29 min** |
-| bit-exact verification | identical = True | identical = True |
+| seed 1 | 93.82% @34 | 94.08% @27 |
+| seed 2 | 93.48% @26 | **94.60% @40** (still climbing at the cap) |
+| seed 3 | 93.87% @29 | 94.13% @33 |
+| **mean** | **93.72%** | **94.27%** (+0.55, **3/3 seeds**: +0.26/+1.12/+0.26) |
+| bit-exact | identical = True (all) | identical = True (all) |
 
-**94.08% is the new repo best**, and it gets there *shallower, smaller and
-faster* — the richer layer-1 input lets the stack climb the same slope in
-fewer layers. It is also the first flagship number verified end-to-end: with
-simplify now supporting the residual all-layer readout, the 11,005-gate
-simplified circuit is confirmed bit-identical to the trained network (the old
-93.85% was published unverified). Honest caveats: single seed, and the +0.26 pt
-over the control is within plausible run-to-run noise — the residual-alone
-evidence (+0.75, 3/3 seeds) is what makes the direction trustworthy; the
-depth/area/time win stands regardless of the accuracy noise.
+**94.27% (3-seed mean, best single 94.60%) is the new repo record**, and every
+run is verified end-to-end: with simplify now supporting the residual all-layer
+readout, each simplified circuit (~10.5–16k gates, 80–81% of raw) is confirmed
+bit-identical to the trained network — the old unverified 93.85% is retired.
+Honest correction: the seed-1 draw looked *shallower/smaller/faster* than its
+control, but that did not hold across seeds (seed 2's low-plane run climbed to
+the depth-40 cap and was still rising). So the robust claim is just the
+accuracy — **+0.55 pt on 3/3 seeds**, consistent with the residual-alone
+low-plane result (+0.75, 3/3) — not a depth or area win.
 
 ## Convolutional wiring, phase 1 (`--local`): a locality prior alone just starves the net (negative)
 
