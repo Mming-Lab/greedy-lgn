@@ -558,10 +558,26 @@ residual readout rescues it (C64 0.90, C128/tree2 0.93), and **C128/tree3
 reaches 0.9600 — level with the dense residual baseline** on an 8×8 field where
 weight sharing has almost nothing to share. Removing pooling drops it to 0.86,
 and k=5 also loses to k=3 — the phase-1 lesson (the receptive field must grow)
-confirmed from the other side. Honest constraint: the soft-training tensor
-[B, C, 2^(tree−1), H·W, 16] hits the 6 GB GPU at C128/tree3 (45 min on digits
-via thrashing); MNIST needs memory work first, so its referee verdict is
-deferred.
+confirmed from the other side.
+
+The seed-1 0.9600 above was a single draw of the heaviest config (C128/tree3,
+45 min); the 3-seed picture (residual, digits) is more sober and puts conv
+*behind* the dense baseline on this tiny field:
+
+| digits, residual, 3 seeds | mean |
+|---|---|
+| dense residual (control) | **96.30%** (96.00/97.11/95.78) |
+| conv C128/tree2 | 92.15% (92.00/91.56/92.89) |
+| conv C64/tree3 | 90.67% (90.67/89.78/91.56) |
+
+So conv trails dense by ~4 pt on 8×8 (expected — no receptive field to grow),
+and **more channels beat a deeper tree** (C128/tree2 > C64/tree3, 3/3 seeds) —
+which sets the default for the MNIST run. Memory was the real blocker and is
+now fixed: folding the 16 gates to a 4-term `{1,a,b,ab}` basis, gradient-
+checkpointing the tree, and budgeting the hard-eval chunks bring MNIST conv
+within 6 GB (layer probes now appear where all three overnight configs
+previously OOM'd). The MNIST referee verdict — does a grown receptive field let
+conv beat the residual champion — is the remaining (compute-bound) step.
 
 **Channel schedule (`--conv-sched`): the V1-shaped inverted funnel does not beat
 constant width on digits (negative, preliminary).** This is where the width-
