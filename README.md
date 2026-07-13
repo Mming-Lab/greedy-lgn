@@ -186,16 +186,16 @@ MIT
 
 | 実験(フラグ) | 一言でいうと | 結果 |
 |---|---|---|
-| 残差readout(`--group-residual`) | 各層の答えを捨てずに積み上げていく(素朴なブースティング)。「答えの積み重ね=学習」 | **MNIST 74.3→90.9%、現在のchampの土台** [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes) |
+| 残差readout(`--group-residual`) | 各層の答えを捨てずに積み上げていく(素朴なブースティング)。「答えの積み重ね=学習」 | **MNIST 74.3→90.9%、現在の最高記録構成の土台** [→](RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes) |
 | 深さ耐性テスト | 何層まで学習できるか力比べ。逆伝播は12層で沈没、greedyは40層でも学べる(ただし精度は別) | greedyの生存を確認 [→](RESULTS.md#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12) |
-| skip配線(`--skip-input`) | どの層にも元画像を見せ直す。深さで劣化しなくなる | 88.2→90.4%、champに+3pt寄与 [→](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth) |
+| skip配線(`--skip-input`) | どの層にも元画像を見せ直す。深さで劣化しなくなる | 88.2→90.4%、最高記録構成に+3pt寄与 [→](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth) |
 | 先読み窓(`--window`) | 1層ずつでなく2層先まで見てから確定(近視の緩和) | +2pt — 今はwarm-startに役目を譲った [→](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap) |
 | Forward-Forward(`--objective ff`) | 「正しいラベルを重ねた画像では発火を増やし、偽ラベルでは減らす」学習。推論まで純論理回路 | MNISTで素より+2.5pt [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
 | 誤答の重点復習(`--ff-neg`) | まず普通に学習→模試→間違えた問題を重点復習(人間の勉強法と同じ発想) | MNIST 82.0%(残差以前の最高値) [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
 | 恒等warm-start(`--warm-start`) | 新しい層をゼロから作らず「前の層の完コピ」から微調整で始める | 先読み窓を+4pt圧倒して引退させた [→](RESULTS.md) |
 | 適応エポック(`--epoch-stop`等) | 伸びが止まった層は早めに切り上げる | **負け**: 固定120が偶然ほぼ最適だった [→](RESULTS.md) |
 | 再帰(`--recur` / `--seq`) | 同じ層を使い回す/画像を1行ずつ流して「記憶」で読む | 恒等初期化がないと崩壊、seqはdigits 91.2% [→](RESULTS.md) |
-| 入力二値化(`--thresholds`) | 画素を白黒に割るしきい値の調整。薄い筆致を拾う低いしきい値を足すのが正解だった | +0.75pt、**champ 94.08%に寄与** [→](RESULTS.md) |
+| 入力二値化(`--thresholds`) | 画素を白黒に割るしきい値の調整。薄い筆致を拾う低いしきい値を足すのが正解だった | +0.75pt、**最高記録94.08%に寄与** [→](RESULTS.md) |
 | 畳み込み配線(`--local` / `--conv`、進行中) | 近くの画素だけ見る配線(単体では**負け**)→ 重み共有カーネル+プーリングの本物の畳み込みへ | digitsで密と同点まで、MNIST判定待ち [→](RESULTS.md) |
 
 **スケーリング側(参考、[SCALING.md](SCALING.md))**: メモリ等価比較(学習メモリを揃えるとgreedyがe2eに全勝 95.0 vs 91.5)/アンサンブル投票(`--ensemble`、独立回路を並べて多数決 — digits 96.4%)/MNISTスケーリング(幅が支配的レバー、90.9%)。
