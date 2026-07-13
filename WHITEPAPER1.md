@@ -70,7 +70,7 @@ Steps 3–5 are the story. Each is bit-exactly verified through simplification (
 
 ## What the circuits actually look like (diagnostics)
 
-Two standalone tools ([`diagnose.py`](diagnose.py), [`dynamics.py`](dynamics.py)) inspect the trained circuits:
+Two standalone tools ([`tools/diagnose.py`](tools/diagnose.py), [`tools/dynamics.py`](tools/dynamics.py)) inspect the trained circuits:
 
 - **Warm-start has a fingerprint.** Plain greedy spreads over the 8 simple gates (~9–11% each, constants ~0.5%); warm-start collapses the distribution onto gate A (pass-through, 39%; A-family ~70%). The identity bias is literally visible in the learned circuit, and it explains why warm layers are barely touched by training (62% keep their init) and simplify less (their pass-throughs are live).
 - **~50% functional redundancy.** Half the gates produce an output column identical or complementary to an earlier gate — yet the simplifier's *structural* duplicate-merge finds zero (different wiring, same behaviour on the data). A quantified gap, honestly not the same as logical equivalence.
@@ -109,7 +109,7 @@ I have not surveyed the literature properly. If any of this — or the combinati
 pip install torch scikit-learn
 python experiment.py --skip-e2e                                   # digits, plain greedy
 python experiment.py --group-residual --skip-e2e                  # the winner
-python experiment.py --dataset mnist --batch 512 --group-residual --skip-input --thresholds 31,63,127,191 --max-layers 40 --device cuda   # the 94% champion
+python experiment.py --dataset mnist --batch 512 --group-residual --skip-input --thresholds 31,63,127,191 --max-layers 40 --skip-e2e --device cuda   # the 94% champion
 python tests.py                                                   # regression: pinned, bit-exact
 ```
 
