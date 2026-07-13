@@ -500,8 +500,27 @@ threshold matters more than reviving dead bits.
 MNIST is the referee and the gain *grows* there (90.64/90.73/90.76 — the new
 config's seed spread is 0.12 pt vs 0.47 for the default, so it is also more
 stable). Input bits cost no gates; the only price is a slightly wider layer-1
-wiring pool. Honest caveats: (1) the published residual-alone 90.86% was a
-single draw from an earlier session — the claim here is the same-protocol
-3-seed comparison (89.96 → 90.71), not "beats 90.86"; (2) the champion config
-(residual + skip, 93.85%) has not yet been re-run with the extra plane — that
-is the obvious next check, since an upstream lever should stack.
+wiring pool. Honest caveat: the published residual-alone 90.86% was a single
+draw from an earlier session — the claim here is the same-protocol 3-seed
+comparison (89.96 → 90.71), not "beats 90.86".
+
+**Champion config check — new repo record, and the first verified one.**
+Stacking the low plane on the champion (residual + `--skip-input`, cap 40,
+seed 1, run side-by-side with a same-protocol control):
+
+| residual + skip, MNIST seed 1 | control (63,127,191) | + low plane (31,63,127,191) |
+|---|---|---|
+| hard test acc | 93.82% @ depth 34 | **94.08% @ depth 27** |
+| raw / simplified gates | 17,000 / 13,711 | **13,500 / 11,005** |
+| training time | 46 min | **29 min** |
+| bit-exact verification | identical = True | identical = True |
+
+**94.08% is the new repo best**, and it gets there *shallower, smaller and
+faster* — the richer layer-1 input lets the stack climb the same slope in
+fewer layers. It is also the first flagship number verified end-to-end: with
+simplify now supporting the residual all-layer readout, the 11,005-gate
+simplified circuit is confirmed bit-identical to the trained network (the old
+93.85% was published unverified). Honest caveats: single seed, and the +0.26 pt
+over the control is within plausible run-to-run noise — the residual-alone
+evidence (+0.75, 3/3 seeds) is what makes the direction trustworthy; the
+depth/area/time win stands regardless of the accuracy noise.
