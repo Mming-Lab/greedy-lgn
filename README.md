@@ -200,7 +200,7 @@ MIT
 
 **スケーリング側(参考、[SCALING.md](SCALING.md))**: メモリ等価比較(学習メモリを揃えるとgreedyがe2eに全勝 95.0 vs 91.5)/アンサンブル投票(`--ensemble`、独立回路を並べて多数決 — digits 96.4%)/MNISTスケーリング(幅が支配的レバー、90.9%)。
 
-**その他の死にレバー**(正直な記録): エポック増、window×幅、window×skip、warmupなしのhard負例(崩壊)、分位点閾値(診断は「上げろ」、データは「低い面を足せ」だった)。
+**その他の死にレバー**(正直な記録 — いずれも既存フラグの設定変更・組合せで実測した負け): エポック増(`--epochs`2倍で+0.1pt)、window×幅・window×skip(組合せが加算されない)、warmupなしのhard負例(`--ff-neg hard`単体は崩壊)、分位点閾値(`--thresholds q3〜q5`は負け — 診断は「上げろ」、データは「低い面を足せ」だった)。
 
 各実験のセットアップ・数値表・**反証された仮説**は [RESULTS.md](RESULTS.md)(スケーリング系は [SCALING.md](SCALING.md))に、生ログは実験ごとの個別issue(#1〜#11、各セクションからリンク)にあります。回路の中身を覗く診断ツール([diagnose.py](diagnose.py)=ゲート種類分布・機能的冗長度、[dynamics.py](dynamics.py)=学習済み再帰セルの発振器census)もあります。
 
