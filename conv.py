@@ -11,7 +11,19 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from core import all16, group_sum, accuracy, fit, make_stop_check
+from torch.utils.checkpoint import checkpoint
+from core import group_sum, accuracy, fit, make_stop_check
+
+# 16ゲートは全て {1, a, b, ab} の線形結合: gate_k = M[k]·[1,a,b,ab]。
+# softmax重みをこの基底に畳む(16→4)ことで [.,16] スタックを作らずに
+# Σ_k w_k gate_k(a,b) = c0 + c1 a + c2 b + c3 ab と計算できる(all16展開と
+# 数学的に厳密同値、ピークメモリ約1/16でOOM回避)。順序はcore.all16に一致。
+GATE_BASIS = torch.tensor([
+    [0, 0, 0, 0], [0, 0, 0, 1], [0, 1, 0, -1], [0, 1, 0, 0],
+    [0, 0, 1, -1], [0, 0, 1, 0], [0, 1, 1, -2], [0, 1, 1, -1],
+    [1, -1, -1, 1], [1, -1, -1, 2], [1, 0, -1, 0], [1, 0, -1, 1],
+    [1, -1, 0, 0], [1, -1, 0, 1], [1, 0, 0, -1], [1, 0, 0, 0],
+], dtype=torch.float32)
 
 
 class ConvLogicLayer(nn.Module):
@@ -26,6 +38,7 @@ class ConvLogicLayer(nn.Module):
         self.register_buffer("leaf",
                              torch.randint(0, Cin * k * k, (C, self.L), generator=g))
         self.logits = nn.Parameter(torch.randn(C, self.L - 1, 16, generator=g))
+        self.register_buffer("basis", GATE_BASIS.clone())   # [16, 4]
         self.Hp, self.Wp = (H // pool, W // pool) if pool > 1 else (H, W)
     def _leaves(self, x):
         """[B, Cin*H*W] → 葉の値 [B, C, L, H*W](zero-padding=境界外は0ビット)"""
@@ -39,32 +52,40 @@ class ConvLogicLayer(nn.Module):
         if self.pool > 1:
             v = F.max_pool2d(v.view(B, self.C, self.H, self.W), self.pool)
         return v.reshape(B, -1)
-    def forward(self, x):                                   # soft(学習)
-        v = self._leaves(x)
-        w = F.softmax(self.logits, -1)                      # [C, L-1, 16]
-        i0 = 0
-        while v.shape[2] > 1:                               # 木を1段ずつ縮約
-            n = v.shape[2] // 2
-            g16 = all16(v[:, :, 0::2], v[:, :, 1::2])       # [B, C, n, HW, 16]
-            v = (g16 * w[:, i0:i0 + n].unsqueeze(0).unsqueeze(3)).sum(-1)
-            i0 += n
-        return self._poolflat(v.squeeze(2))
-    @torch.no_grad()
-    def hard(self, x):                                      # 離散化(推論)
-        v = self._leaves(x)
-        sel = self.logits.argmax(-1)                        # [C, L-1]
+    def _combine(self, a, b, coeff):
+        """a,b: [B,C,n,HW]、coeff: [C,n,4] → c0 + c1 a + c2 b + c3 ab。
+        16ゲートの重み和を [.,16] スタックなしで計算(メモリの要)"""
+        c = [coeff[..., i].unsqueeze(0).unsqueeze(-1) for i in range(4)]  # [1,C,n,1]
+        return c[0] + c[1] * a + c[2] * b + c[3] * (a * b)
+    def _reduce(self, v, coeff_all):
+        """木を1段ずつ縮約。coeff_all: [C, L-1, 4]"""
         i0 = 0
         while v.shape[2] > 1:
-            n, B, HW = v.shape[2] // 2, v.shape[0], v.shape[3]
-            g16 = all16(v[:, :, 0::2], v[:, :, 1::2])
-            s = sel[:, i0:i0 + n].view(1, self.C, n, 1, 1).expand(B, -1, -1, HW, 1)
-            v = g16.gather(-1, s).squeeze(-1)
+            n = v.shape[2] // 2
+            v = self._combine(v[:, :, 0::2], v[:, :, 1::2], coeff_all[:, i0:i0 + n])
             i0 += n
         return self._poolflat(v.squeeze(2))
+    def _soft(self, x, coeff):
+        return self._reduce(self._leaves(x), coeff)
+    def forward(self, x):                                   # soft(学習)
+        coeff = F.softmax(self.logits, -1) @ self.basis     # [C, L-1, 4](16->4)
+        if torch.is_grad_enabled():
+            # 勾配チェックポイント: 葉テンソル[B,C,L,HW]と各段のa,b,abを順伝播で
+            # 保持せずbackwardで再計算(6GBでMNIST 28x28を通すための要。入力xと
+            # 係数coeffだけ保持)。use_reentrant=Falseでno-grad入力に対応
+            return checkpoint(self._soft, x, coeff, use_reentrant=False)
+        return self._soft(x, coeff)
+    @torch.no_grad()
+    def hard(self, x):                                      # 離散化(推論)
+        coeff = self.basis[self.logits.argmax(-1)]          # [C, L-1, 4](選択ゲート)
+        return self._reduce(self._leaves(x), coeff)
 
 
-def hard_chunked(L, x, chunk=2048):
-    """convのhardをバッチ分割で(all16の一時テンソル [B,C,n,HW,16] を抑える)"""
+def hard_chunked(L, x, budget=120_000_000):
+    """convのhardをバッチ分割で評価。葉テンソル [chunk, C, L, HW] がMNISTでは
+    巨大(chunk2048で3.2GB)なので、chunk*C*L*HW を budget 以下に抑える"""
+    per = max(1, L.C * L.L * L.H * L.W)
+    chunk = max(64, budget // per)
     return torch.cat([L.hard(c) for c in x.split(chunk)])
 
 
