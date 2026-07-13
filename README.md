@@ -6,6 +6,8 @@
 
 Proof-of-concept. Runs on CPU in a few minutes. A single self-contained script, no dependencies beyond `torch` and `scikit-learn`.
 
+📄 **Narrative write-up:** [WHITEPAPER.md](WHITEPAPER.md) — the climb to 94% as a reproducible experiment log (with a Japanese abstract).
+
 > **Just me playing around, not research.** I don't read papers — I bounce ideas off an AI assistant, run the experiments, and enjoy watching the accuracy points move. That's the whole thing. Nothing here is peer-reviewed, and the only "literature search" was asking the AI, so I make **no novelty or priority claims**. Plenty of these ideas probably already exist under names I don't know. Read it as a reproducible playground log, not a contribution; if it duplicates prior work, that's expected — pointers are welcome via an issue.
 
 ## Why
