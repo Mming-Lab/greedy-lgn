@@ -190,6 +190,11 @@ def main():
     p.add_argument("--conv-pool", type=int, default=2, metavar="P",
                    help="pooling factor per conv layer (1 = no pooling;"
                         " automatically disabled once the map is too small)")
+    p.add_argument("--conv-sched", type=str, default=None, metavar="C0,C1,...",
+                   help="per-layer channel schedule for --conv (overrides the flat"
+                        " --conv count): e.g. 128,64,32 = inverted-funnel (wide"
+                        " first, after V1's LGN->V1 fan-out). Depths past the list"
+                        " reuse the last value. Sets --conv to the first entry.")
     p.add_argument("--local", type=int, default=0, metavar="K",
                    help="convolutional wiring, phase 1 (locality prior only, no"
                         " weight sharing): every gate gets a pixel position and"
@@ -241,6 +246,11 @@ def main():
                           or cfg.seq):
         p.error("--local is groupsum + window=1 only (skip-input OK;"
                 " skip-all/carry/recur/seq not yet)")
+    # --conv-sched "128,64,32" を数値リスト化し、cfg.conv を先頭に(オフ判定用)
+    cfg.conv_sched = ([int(x) for x in cfg.conv_sched.split(",")]
+                      if cfg.conv_sched else None)
+    if cfg.conv_sched:
+        cfg.conv = cfg.conv_sched[0]
     if cfg.conv > 0 and (cfg.objective != "groupsum" or cfg.window > 1
                          or cfg.skip_input or cfg.skip_all or cfg.carry
                          or cfg.recur > 1 or cfg.seq or cfg.local > 0

@@ -547,3 +547,41 @@ The convolutional benefits (weight sharing = more effective samples per
 parameter, pooling = growing receptive field) are exactly the parts this
 phase left out — so this negative sharpens the phase-2 hypothesis rather than
 killing the direction.
+
+**Phase 2 (`--conv`): real convolution recovers, and pooling is load-bearing.**
+`--conv C` builds C weight-shared kernels (a depth-`--conv-tree` gate tree whose
+leaves wire inside a `--conv-k` window), replicated over all positions, then
+`--conv-pool`×pool OR-pooled — following convolutional DLGNs (Petersen et al.
+2024). digits calibration (seed 1, residual): plain conv starts at 0.46, the
+residual readout rescues it (C64 0.90, C128/tree2 0.93), and **C128/tree3
+reaches 0.9600 — level with the dense residual baseline** on an 8×8 field where
+weight sharing has almost nothing to share. Removing pooling drops it to 0.86,
+and k=5 also loses to k=3 — the phase-1 lesson (the receptive field must grow)
+confirmed from the other side. Honest constraint: the soft-training tensor
+[B, C, 2^(tree−1), H·W, 16] hits the 6 GB GPU at C128/tree3 (45 min on digits
+via thrashing); MNIST needs memory work first, so its referee verdict is
+deferred.
+
+**Channel schedule (`--conv-sched`): the V1-shaped inverted funnel does not beat
+constant width on digits (negative, preliminary).** This is where the width-
+schedule idea (task 16: budget = *average* channels, vary the shape) meets conv
+(task 28), tested in one knob. Motivation from biology: the primate visual
+pathway is roughly an inverted funnel — retinal ganglion cells ≈ LGN (~1:1),
+then LGN → V1 fans out 17–40× ([PMC5750718](https://pmc.ncbi.nlm.nih.gov/articles/PMC5750718/)) — so "wide first layer" seemed principled.
+At matched average channels (~61, residual, tree3):
+
+| shape | schedule | digits acc |
+|---|---|---|
+| constant | 64,64,64,64,64 | **0.9044** |
+| inverted funnel (V1-like) | 128,64,48,32,32 | 0.8867 |
+| funnel | 32,32,48,64,128 | 0.8111 |
+
+Constant width wins; the inverted funnel is slightly behind and the funnel is
+far worse. Two honest reads: (1) the *direction* is right — starving the
+first layer (funnel) that sees the raw image costs 9 pt, so "capacity early"
+matters, just not enough to beat constant here; (2) digits (8×8) is a poor
+testbed — pooling collapses the map to 1–2 px by layer 3, leaving no room for
+a spatial schedule, and the wide first layers thrash/OOM on 6 GB. A fair test
+needs MNIST (28×28) plus the memory work; deferred. The `--conv-sched`
+mechanism itself does exactly what task 16 asked (per-layer width at a fixed
+*average* budget), now on top of convolution.

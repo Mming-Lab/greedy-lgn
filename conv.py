@@ -85,21 +85,30 @@ class ConvGroupSum:
     def header(self):
         cfg = self.cfg
         Cin, H, W = self.shape
-        learned = cfg.conv * (2 ** cfg.conv_tree - 1)
+        sched = getattr(cfg, "conv_sched", None)
+        cdesc = f"C={','.join(map(str, sched))}" if sched else f"C={cfg.conv}"
         return (f"=== (A''') Greedy layer-wise, convolutional logic kernels"
-                f" (C={cfg.conv}, k={cfg.conv_k}, tree={cfg.conv_tree},"
-                f" pool={cfg.conv_pool}; {learned} learned gates/layer,"
-                f" unrolled {H}x{W}x{learned}) ==="
+                f" ({cdesc}, k={cfg.conv_k}, tree={cfg.conv_tree},"
+                f" pool={cfg.conv_pool}) ==="
                 + (" [residual]" if cfg.group_residual else ""))
     def begin(self, layers, d0):
         return self.pool_tr.shape[1]
+    def _channels(self, d0):
+        """層d0のチャンネル数。--conv-sched でスケジュール指定(逆ファンネル等)、
+        未指定なら全層 cfg.conv 一定。範囲外の深さは最後の値を使い回す
+        (生物のV1: LGN→V1で17〜40倍展開=逆ファンネルが着想元。--conv-sched 128,64,32)"""
+        sched = getattr(self.cfg, "conv_sched", None)
+        if sched:
+            return sched[min(d0, len(sched) - 1)]
+        return self.cfg.conv
     def make_layer(self, in_dim, d0, k):
         cfg = self.cfg
         Cin, H, W = self.shape
         pool = cfg.conv_pool if min(H, W) >= 2 * cfg.conv_pool else 1
-        L = ConvLogicLayer(Cin, H, W, cfg.conv, cfg.conv_k, cfg.conv_tree, pool,
+        C = self._channels(d0)
+        L = ConvLogicLayer(Cin, H, W, C, cfg.conv_k, cfg.conv_tree, pool,
                            seed=cfg.seed * 100 + d0 + k + 1)
-        self._pending_shape = (cfg.conv, L.Hp, L.Wp)
+        self._pending_shape = (C, L.Hp, L.Wp)
         return L
     def _tau(self, bits):
         return float(np.sqrt(bits / self.cfg.n_class))
