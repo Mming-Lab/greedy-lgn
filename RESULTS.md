@@ -71,32 +71,6 @@ Three observations, stated honestly:
 
 Full run log: [issue #2](https://github.com/Mming-Lab/greedy-lgn/issues/2).
 
-## Memory-matched comparison: equal training memory, greedy wins
-
-Greedy's training-memory advantage (only one layer is ever soft) can be spent on width
-instead. With 4× wider layers (2,000 gates), greedy holds the same 32,000 float logits
-during training as the 4-layer end-to-end baseline:
-
-| config | float logits during training | hard-circuit test acc (seeds 1/2/3) | mean |
-|---|---|---|---|
-| greedy, 500 gates/layer | 8,000 | 88.2 / 88.0 / 88.9 | 88.4% |
-| greedy, 1,000 gates/layer | 16,000 | 92.7 (seed 1 only) | — |
-| **greedy, 2,000 gates/layer** | **32,000** | **94.7 / 95.3 / 94.9** | **95.0%** |
-| end-to-end, 500 × 4 layers | 32,000 | 93.6 / 90.4 / 90.4 | 91.5% |
-
-- **At equal training memory, greedy beats end-to-end on every seed tested** (mean
-  +3.5 pt) and with much lower variance (0.6 pt spread vs 3.2 pt). Depth is still
-  chosen automatically (4 on all seeds) and the discretization gap is still
-  structurally zero, while e2e shows small seed-dependent gaps (e.g. +0.9 pt on seed 2).
-- **The honest cost: a larger inference circuit.** The memory-matched greedy circuit is
-  ~5,300 gates after simplification vs 2,000 (raw) for e2e — greedy trades hardware
-  area for training memory and cross-seed stability. (The simplification pass currently
-  runs only in the greedy pipeline, so the e2e count is unsimplified.)
-- Same toy-scale caveats as everywhere in this file: one easy dataset, 450 test
-  samples, 3 seeds.
-
-Full run log: [issue #3](https://github.com/Mming-Lab/greedy-lgn/issues/3).
-
 ## Skip connections: re-exposing the input turns survivable depth into usable depth
 
 Classic residual addition (`x + f(x)`) does not exist in Boolean circuits, but its
@@ -144,33 +118,6 @@ recommended configuration.
 Full run logs: [issue #4](https://github.com/Mming-Lab/greedy-lgn/issues/4)
 (`--skip-input`), [issue #5](https://github.com/Mming-Lab/greedy-lgn/issues/5)
 (`--skip-all`).
-
-## MNIST: the pattern replicates (first pass, small budget)
-
-Ported via `--dataset mnist` (28×28 → 3-threshold thermometer → 2,352 bits, standard
-60k/10k split) with `--batch` minibatch training — full-batch training does not fit a
-6 GB GPU at this scale; defaults remain full-batch and bit-identical for digits.
-
-| config | float logits during training | hard-circuit test acc |
-|---|---|---|
-| greedy, 500 gates/layer, no skip | 8,000 | 74.3% (depth 6) |
-| end-to-end, 500 × 4 layers | 32,000 | 80.1% (gap +0.1 pt) |
-| **greedy, 2,000 gates/layer + `--skip-input`** | **32,000** | **84.6% (depth 9)** |
-
-- **The digits-scale findings replicate on a 45× larger dataset**: at equal training
-  memory, greedy + skip beats end-to-end by +4.5 pt, depth is chosen automatically, the
-  discretization gap is structurally zero, and simplification removes 73% of the gates
-  (18,000 → 4,814, verified bit-exact).
-- **Honest positioning: these absolute numbers are far below the difflogic literature**
-  (~97.7% on MNIST, using tens of thousands of gates per layer and much larger training
-  budgets). This is a deliberately small-budget first pass (≤2,000 gates/layer, 30
-  epochs/layer, single seed) where the meaningful comparison is greedy vs end-to-end
-  *under the same budget*. Closing the absolute gap — wider layers, more epochs, better
-  input binarization — is future work.
-- Runtime: ~13 min for the 2,000-gate greedy run on an RTX 3060 Laptop. CPU would take
-  hours; `digits` remains the CPU-friendly configuration.
-
-Full run log: [issue #6](https://github.com/Mming-Lab/greedy-lgn/issues/6).
 
 ## Windowed lookahead: training two layers ahead closes most of the myopia gap
 
@@ -237,135 +184,6 @@ artifact: within each 2-layer block the first layer's probe is consistently weak
 optimizes most directly, and depth selection lands on even depths accordingly.
 
 Full run log: [issue #7](https://github.com/Mming-Lab/greedy-lgn/issues/7).
-
-## Ensemble voting: parallel circuits are the training-memory-free width lever
-
-Hardware framing first: replicating a logic circuit M× costs area and power but **no
-latency** (members evaluate in parallel), and a majority vote is itself a small Boolean
-circuit — so an ensemble of hard networks plus its vote is still one pure logic
-circuit, and each member's bit-exactness is verified independently by the
-simplification pass.
-
-`--ensemble M` trains M independent greedy networks that differ only in seed
-(`seed .. seed+M-1`, which also randomizes each member's wiring) and reports two vote
-rules:
-
-- **soft vote**: sum the members' GroupSum counts, then argmax. Mathematically this
-  equals concatenating the members' final layers into a single M×-wide GroupSum
-  readout — i.e. the ensemble is a *block-diagonally wired* wide network.
-- **majority vote**: per-member argmax, then plurality; ties broken by the summed
-  counts (the tie-break is scaled so it can never overturn a vote lead).
-
-Digits, seeds 1–4 (members 1–3 reproduce the known single-run numbers exactly):
-
-| config | member mean | soft vote | majority vote |
-|---|---|---|---|
-| 500 gates, plain ×4 | 87.7% | 91.1%¹ | 90.2% |
-| 500 gates, plain ×8 | 87.6% | 92.0%¹ | 91.6% |
-| 500 gates, W=2 blocks ×4 | 89.9% | 92.2% | **92.4%** |
-| 2,000 gates + skip ×4 | 95.5% | 96.2% | **96.4% — repo best** |
-
-¹ Corrected. The originally posted soft votes (91.3% / 91.8%) came from summing
-τ-divided float counts across members, whose argmax flips on exactly-tied classes
-depending on the device's floating-point reduction order — a CPU/GPU mismatch found
-by the pinned regression suite (`tests.py`). Voting now sums exact integer counts
-(mathematically the same argmax, deterministic on every device); members and
-majority votes were unaffected. Corrected values are the deterministic ones.
-
-MNIST (500 gates/layer, `--batch 4096 --epochs 30`, seeds 1–4; soft votes are the
-corrected integer-count values, see footnote 1):
-
-| config | member mean | soft vote | majority vote |
-|---|---|---|---|
-| plain ×4 | 74.5% | **83.0%** | 82.0% |
-| W=2 blocks ×4 | 77.3% | **84.7%** | 83.9% |
-
-Findings:
-
-1. **Voting stacks with everything tried so far** — with windowed lookahead (92.4% on
-   digits, beating the e2e 3-seed mean of 91.5% for the first time at 500 gates) and
-   with skip+width (96.4%, new repo best). Contrast with window × skip, which did not
-   stack: error decorrelation fixes a different failure mode than myopia or
-   information starvation.
-2. **The MNIST gain is much larger than the digits gain** (+8.4 pt vs +3.6 pt at 500
-   gates): harder task, more room for members to disagree.
-3. **New MNIST headline**: 4 × (500 gates, W=2 blocks) reaches **84.7%**, edging out
-   the previous repo best of 84.6% (single 2,000-gate + skip) while holding **half the
-   training memory** (2×500×16 = 16,000 float logits for the soft window vs 32,000)
-   and fewer raw inference gates (13,000 vs 18,000). Members can also be trained in
-   parallel on separate devices — greedy inside a member, embarrassingly parallel
-   across members.
-4. **Honest limit: ensembling is not a substitute for direct width.** At comparable
-   inference area on digits, one 2,000-wide network (8,000 raw gates, 95.0% mean)
-   clearly beats 4×500 members (5,500 raw gates, 91.3%). Joint training within a wide
-   layer buys more than decorrelation across narrow ones. The ensemble's niche is
-   converting inference area into accuracy **without touching training memory** — the
-   exact lever the VRAM-bound MNIST scaling plan needs.
-5. **Vote-rule crossover**: soft vote wins for weak members (it averages away
-   overconfident mistakes), majority vote wins for strong members (one member's
-   overconfident error can poison the summed counts but costs only one vote).
-
-Full run log: [issue #8](https://github.com/Mming-Lab/greedy-lgn/issues/8).
-
-## MNIST scaling: width × ensembles push past 90%
-
-The absolute-accuracy follow-up to the MNIST first pass, testing the levers identified
-above against each other. All runs: `--dataset mnist --skip-input --epochs 30
---max-layers 14`, RTX 3060 Laptop 6 GB. A code-level enabler shipped with this
-experiment: `hard_batched` now scales its evaluation chunk inversely with layer width
-(bit-exact, identical chunking for 500-gate configs), which keeps the `[B, G, 16]`
-temporaries inside 6 GB at 4,000+ gates.
-
-| config | hard test acc | runtime |
-|---|---|---|
-| 2,000 gates (first-pass best, for reference) | 84.6% | ~7 min |
-| 2,000 gates ×4 ensemble, soft vote | 87.3%¹ | ~15 min |
-| 2,000 gates + W=2 blocks (single) | 84.7% | ~5 min |
-| 4,000 gates (single) | 89.8% (depth 7) | ~8 min |
-| 4,000 gates, 2× epochs (single) | 89.9% | ~15 min |
-| **4,000 gates ×4 ensemble, soft vote** | **90.9%¹** | ~28 min |
-
-¹ Ensemble soft votes are the corrected exact-integer-count values (see the
-[ensemble-voting footnote](#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever));
-the originally posted figures were 87.34% / 90.86%, off by ≤0.05 pt.
-
-Findings:
-
-1. **Width is the dominant lever, and it has not saturated.** Doubling width
-   2,000 → 4,000 buys +5.2 pt for a single network (84.6% → 89.8%) — far more than any
-   other lever at this scale. Simplification keeps ~42–45% of gates (28,000 → 12,517
-   at 4,000 gates), bit-exact as always.
-2. **Ensembling stacks at every width, with diminishing returns as members
-   strengthen**: the ×4 vote adds +8.5 pt at 500 gates, +3.2 pt at 2,000, +1.3 pt at
-   4,000. Combined best: **90.90%** (4 × 4,000 + skip, soft vote) — the repo's first
-   crossing of 90% on MNIST.
-3. **Two levers confirmed dead at this scale, reported honestly**: doubling epochs
-   adds +0.1 pt (89.77% → 89.89%), and windowed lookahead on top of width+skip adds
-   +0.1 pt (84.57% → 84.65% at 2,000 gates) — consistent with the digits finding that
-   the window does not stack with skip. The myopia deficit appears to be whatever
-   width and skip have not already fixed.
-4. **Honest positioning unchanged in kind, narrowed in degree**: the gap to
-   difflogic-scale results (~97.7%) shrinks from ~13 pt to ~7 pt, still with far
-   smaller budgets (≤4,000 gates/layer, 30 epochs, single machine). Remaining known
-   levers: 8,000-gate layers (see below), better input binarization, and
-   convolutional wiring.
-5. **8,000 gates: OOM at 6 GB, but the partial result is telling.** Before crashing
-   while building layer 3, the 8,000-gate run reached **90.01% at depth 2** — above
-   the best completed single 4,000-gate net (89.77% at depth 7), so width is still
-   not saturated. The chunk budgeting fixed only the evaluation temporary; the real
-   constraint is the **persistent wiring pools** (`[60000, 10352]` float32 plus
-   transient copies during the skip-pool transition ≈ 7 GB). Fix candidates for a
-   follow-up: uint8 pools (hard bits are bits), CPU-resident pools with per-batch
-   transfer, or an in-place pool buffer.
-6. **Width also lifts the residual readout (reference only).** The residual/boosting
-   readout is a fixed-budget (500-gate) idea, but for reference, giving it more width
-   scales cleanly on MNIST single net, no ensemble: 500 → **90.9%**, 1,000 → **93.3%**,
-   2,000 → **95.4%** (depth 8). So a single 2,000-gate residual net already beats the
-   old width×ensemble flagship (90.9%) by +4.5 pt. This is the scaling track, not the
-   arena — the headline claims stay at 500 gates — but it shows the residual idea does
-   not stop paying off when you spend area on it.
-
-Full run log: [issue #9](https://github.com/Mming-Lab/greedy-lgn/issues/9).
 
 ## Forward-Forward objective: popcount goodness — behind on digits, ahead on MNIST
 
@@ -538,3 +356,119 @@ digits likewise: residual 96.4% → residual+skip **97.3%**. The 93.85% is a sin
 **Residual also revives the carry window (①+②).** Windowed lookahead was near-useless on plain greedy, and the carry-forward window (`--carry`, keeping the uncommitted lookahead layer instead of discarding it) actually *hurt* on its own (digits 90.2 vs 91.6). On top of residual, both flip positive: `--window 2 --commit 1 --win-loss all` adds +1.1 pt (MNIST 90.86 → 92.00), and adding `--carry` adds a further +0.25 pt (→ 92.25). The sign flip is the point — a carried layer's value in plain mode is its (fragile) features, which go stale when the layer below is frozen; in residual mode its value is the *answer correction* it contributes, which stays portable. So the project owner's "①+② should revive ②" was right in direction, though the gain is small and still below residual+skip (93.85%). Residual now supports `--window`; W=1 stays bit-exact.
 
 Full run log: [issue #11](https://github.com/Mming-Lab/greedy-lgn/issues/11).
+
+## Residual sample reweighting (`--group-boost`): a modest lever
+
+AdaBoost-style reweighting on top of the residual readout: samples the frozen
+running sum currently misclassifies get their CE weighted `B×` in the next
+layer's training. The grader is the frozen prefix only (no self-grading), and
+the residual already gives every misclassified sample a large gradient, so the
+question was whether *explicit* reweighting adds anything.
+
+| MNIST, 500-gate residual, seed | B=1 (plain residual) | B=3 |
+|---|---|---|
+| 1 | 90.14 | 91.04 |
+| 2 | 90.06 | 89.94 |
+| 3 | 89.67 | 90.18 |
+| **mean** | **89.96** | **90.39 (+0.43)** |
+
+digits 3-seed likewise: +0.67 pt at B=3. **Honest verdict:** a real but small
+gain (2/3 seeds win, mean +0.43 pt on MNIST), consistent with the hypothesis
+that gradient boosting already focuses on hard samples implicitly — the explicit
+reweight only doubles down. Does not touch the residual+skip champion (93.85%).
+
+## Identity warm-start (`--warm-start`): kills the lookahead window, not the residual
+
+Instead of random init, each new layer (that has a previous layer) starts by
+*reproducing the previous layer's output bits* — structured wiring `ia[i] =
+(in_dim − gates) + i` into the pool tail (where the previous hidden bits live in
+every skip mode) plus a logit bias `B` toward gate A (passthrough). The layer
+begins as a non-destructive copy and learns the residual from there (a ResNet
+identity block, in logic gates).
+
+digits 3-seed (plain greedy, no residual):
+
+| config | mean acc | note |
+|---|---|---|
+| plain | 88.37 | peaks at depth 4, then decays |
+| plain + `--window 2 --commit 2` (lookahead) | 90.44 | |
+| **plain + `--warm-start 5`** | **94.52** | climbs to the depth cap, never plateaus |
+| residual (champion) | 96.30 | |
+
+Warm-start **beats the lookahead window by +4.1 pt** and closes most of the
+plain→residual gap — with no residual readout, just a better init. Raising the
+depth cap, warm-start keeps climbing to depth 15 (0.9667) where plain greedy
+decays after depth 4. On MNIST the direction replicates (warm-start beats the
+window by ~+11 pt) but single-seed MNIST is noisy: the same config drew 0.8891
+then 0.8504 on rerun (~4 pt CUDA nondeterminism, because accuracy is still
+climbing steeply at the depth cap so early differences compound). With the cap
+raised it climbs to 0.8707 @ depth 20 — **well below the residual champion
+(0.9086 @ depth 9)**. So warm-start's real value is making *plain* greedy
+depth-productive and retiring the lookahead window; it is not a residual
+replacement. `residual + warm-start` is flat vs residual alone (like boost:
+overlapping cures). Idea proposed by the project owner ("start each new layer
+from an adjustable state, not random — maybe the window becomes unnecessary").
+
+## Adaptive per-layer epochs (`--epoch-stop` / `--epoch-peak` / `--epoch-chain`): fixed 120 was already near-optimal
+
+Replace the fixed 120 epochs/layer with early stopping on the **gate-argmax
+change rate** (churn of the discrete circuit — smoother than the noisy hard
+probe, and the only thing the next layer inherits). Four criteria were tried,
+all calibrated on digits + warm-start:
+
+- `--epoch-stop T` (settle): stop when churn < T. Needs `--epoch-min 70` — warm
+  layers have a quiet churn *valley* around epoch 30-60 before ramping up, and a
+  low min false-fires there.
+- `--epoch-peak F` (weak-learner): stop once churn decays below F× the peak seen
+  (commit half-baked layers, let depth work). F=0.5 was the best adaptive variant.
+- `--epoch-peak-decay D`: depth schedule F·Dᐧ (deeper layers train longer).
+- `--epoch-chain M`: layer 1 settles via `--epoch-stop`; its stop-time churn
+  becomes the yardstick and each later layer stops at M× the previous layer's
+  rate (auto-calibrated threshold). Project-owner idea.
+
+digits + warm-start, 3-seed means: fixed-120 **95.6%** (±2.2), peak0.5 94.7%,
+chain2 95.2% (±0.4), settle 94.2%, decay schedules 93–94% and shallower.
+**Honest negative result:** no adaptive variant beats fixed 120 on accuracy.
+Per-layer churn half-decays at ~125-130 epochs, so the default 120 already sits
+near the optimum — adaptive mostly rediscovers it minus tuning noise. Two things
+worth keeping: (1) `--epoch-chain 2` matches fixed-120 on the mean with **5×
+lower variance** (a stability, not accuracy, win); (2) the mechanism revealed
+that **fully settling a layer stalls depth growth** — a saturated layer's tiny
+per-layer gain trips the depth patience, which also explains why the "saturate
+the deeper layers" schedule backfired (auto-depth means saturating a layer
+*causes* it to become the end of the stack). Per-layer convergence is not the
+objective; slightly under-trained layers leave room for depth. MNIST untested.
+
+## Within-layer recursion (`--recur`) and temporal recurrence (`--seq`): identity is the precondition, and its *direction* is the point
+
+Two ways to recurse discrete logic, both weight-tied (learned logits stay one
+layer's worth):
+
+**`--recur K`** applies each layer K times to a static input (unrolled circuit K
+layers deep per trained layer; `simplify` verifies the unrolled circuit
+bit-exact). **`--seq`** presents the image one row per step (digits: T=8,
+24 bits/step) and makes each layer a recurrent cell `s_t = L([x_t; s_{t-1}])`
+trained by BPTT over T steps — wiring (concat) and GroupSum readout follow
+RDDLGN ([arXiv:2508.06097](https://arxiv.org/abs/2508.06097)); no novelty is
+claimed. Frozen layers pass HARD state-bit sequences forward, so the
+across-layer zero-gap property carries over (the within-layer temporal gap
+remains, as in RDDLGN's 5.00→4.39 BLEU).
+
+Both **collapse from random init** and are **rescued by identity warm-start**:
+
+| digits seed 1 | plain (random init) | + identity warm-start |
+|---|---|---|
+| `--recur 3` | 0.836 @ depth 1 (collapse) | 0.938 @ 8 |
+| `--seq` | 0.824 @ 3 | 0.909 @ 7 (warm 3) |
+
+`--seq` 3-seed: warm3 **0.9118**, warm5 0.9111, plain 0.8296 — seeing only
+24 bits/step, warm-start beats static plain greedy (0.884) by +2.8 pt, though
+not static warm-start (0.945). A sharp mechanistic detail: in `--seq` the
+identity must point at the **previous layer's** state (head of the concat), not
+the layer's **own** state (tail) — tail-identity is a self-referential loop on a
+zero-initialised state and collapses (82% → 27%). This makes the pattern
+three-for-three: **recursing discrete logic needs a near-identity map, and it
+must point at informative bits** — the same conclusion RDDLGN reaches from the
+other side (their Table 7: "Residual" hidden-state init essential, Gaussian
+collapses to 22.6%). MNIST `--seq` is deferred: 28-step BPTT over minibatches is
+too slow for interactive turnaround on a 6 GB GPU (needs a multi-hour batch run).

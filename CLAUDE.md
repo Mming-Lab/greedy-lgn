@@ -122,6 +122,32 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
   warmup0.5がMNIST 82.0%@深さ15(random78.2から+3.8pt=リポジトリの500ゲート
   単発MNIST最高、全目的関数通じて)。digitsは天井で差つかず(mix89.7が僅差最良)、
   MNISTで大差 = digits天井/MNIST審判の2層運用の好例。ログはissue #10のコメント
+- 恒等warm-start(--warm-start, 2026-07-13): 各層を「前層出力の再現(gate Aパス
+  スルー+末尾恒等配線)」で初期化してから残差を微調整(ResNetの恒等ブロック)。
+  digits 3シード: 素88.4→窓90.4に対しwarm5=94.5%(窓を+4.1pt圧倒、深さ15まで
+  生産的)。MNISTも窓を+11pt上回るが単発ノイズ±4pt(深さ上限で急勾配のため)、
+  残差champ(90.9%)には未達(0.87@深さ20)。「素greedyを深さ生産的にし先読み窓を
+  葬るレバー、ただし残差の代替ではない」。residual+warm5は残差単体と横ばい
+  (boostと同じ、治す病が重複)。RESULTS.md「Identity warm-start」節
+- 残差×誤答重点(--group-boost, 2026-07-13): 残差の上でAdaBoost式サンプル再重み
+  付け。MNIST 3シード平均+0.43pt(B=3、2/3シード勝ち)の控えめレバー。残差が
+  既に暗黙に誤答重視のため上乗せ小。看板の残差+skip(93.85%)は不変
+- 適応エポック(--epoch-stop/peak/decay/chain, 2026-07-13): 固定120でなくargmax
+  変化率(離散回路のchurn)で層を早期終了。否定的結果 — digits+warmで全変種が
+  固定120(95.6%)に未達。churn半減点が~125epochで固定120が既にほぼ最適。
+  --epoch-chain 2は固定120に並びつつ分散5分の1(安定性の勝ち)。知見: 層を完全
+  飽和させると深さ成長が止まる(飽和層の微小利得が深さpatienceを踏む)=「1層の
+  収束はスタックの目的でない」。RESULTS.md「Adaptive per-layer epochs」節
+- 再帰2種(--recur / --seq, 2026-07-13): 重み共有再帰。--recur K=静的入力に層を
+  K回反復(パラメータ圧縮、simplifyは展開回路で等価検証)、--seq=RDDLGN型時系列
+  (画像を行ごと提示 s_t=L([x_t;s_{t-1}])、BPTT、GroupSum読出、配線はarXiv
+  2508.06097と同型・新規性主張なし)。両方とも素の初期化で崩壊し恒等warmで救済。
+  --seq digits 3シード: warm3=0.912(毎ステップ24ビットで静的素0.884を+2.8pt、
+  静的warm0.945には未達)。鋭い機構: --seqの恒等は「前層状態」向き必須で「自状態」
+  向きは崩壊(82→27%、ゼロ初期状態の自己ループ)。3レバー通算の結論=離散論理の
+  再帰は恒等に近い写像が前提かつ恒等の向きが本質(RDDLGN Table 7のResidual init
+  必須・Gaussian崩壊22.6%と独立に一致)。MNIST --seqは保留(28ステップBPTTが
+  6GB GPUで対話的には重すぎ、数時間バッチ要)。RESULTS.md「Within-layer recursion」節
 
 ## ファイル
 2026-07-12にモジュール分割(純粋なコード移動、CLI・全数値ビット等価を回帰で確認):
@@ -133,6 +159,7 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
 - scaling.py   : オフトラックのスケーリングレバー(アンサンブル投票、SCALING.md対応)
 - e2e.py       : 逆伝播ベースライン
 - simplify.py  : 論理簡略化+ビット等価検証
+- seq.py       : row-sequential再帰(--seq、RDDLGN型の時系列状態。2026-07-13追加)
 - README.md    : 英語本体+日本語概要。要点サマリ+RESULTS.mdへのリンク集に圧縮済み
 - RESULTS.md   : 実験詳細の本体(セットアップ・数値表・反証された仮説)。
                  今後の実験結果はREADMEでなくここに追記する

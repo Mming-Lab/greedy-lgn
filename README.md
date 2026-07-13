@@ -85,15 +85,18 @@ Wider layers (`--gates`) and ensembles (`--ensemble`) buy accuracy by spending c
 | Windowed lookahead (`--window`) | training 2 layers ahead closes ~⅔ of the myopia gap: 90.4% vs e2e's 91.5% (3 seeds), +2.4 pt on MNIST; overlap/receding-horizon variant loses to plain blocks | [→](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap) |
 | Forward-Forward objective (`--objective ff`) | goodness = **popcount** on binary layers, so the whole FF inference is one logic circuit; 2.4 pt behind supervised local CE on digits (86.0%) but **+2.5 pt ahead on MNIST** (76.8%) — and the first lever to exploit depth (17 layers) without skip wiring; needs label-bit replication for sparse random wiring | [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
 | FF × window, FF negative mining (`--ff-neg`) | windowed lookahead **stacks with FF** (digits 88.0%) unlike with skip; mining works once you warm up before mining (`--ff-neg review --ff-neg-warmup 0.5`): flat on digits but **MNIST 78.2% → 82.0% — the repo's best fixed-budget net**. Pure hard negatives without warm-up collapse. Structured data×label wiring (`--ff-struct`) replaces the label-replication hack at equal MNIST accuracy (tie, not a win) with a tiny pool and zero wasted gates | [→](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist) |
+| Identity warm-start (`--warm-start`) | init each layer to reproduce the previous one (ResNet identity block in logic gates), then refine. **Retires the lookahead window**: on plain greedy digits, 94.5% vs the window's 90.4% (3 seeds), and keeps depth productive to 15 layers. Beats the window by ~+11 pt on MNIST too, but single-seed MNIST is noisy (~4 pt) and it stays **below the residual champion** — its value is fixing *plain* greedy, not replacing residual. `--group-boost` (AdaBoost-style reweighting on residual) is a modest +0.43 pt on MNIST | [→](RESULTS.md) |
+| Adaptive per-layer epochs (`--epoch-stop` / `--epoch-chain`) | stop each layer when its gate-argmax churn settles, instead of a fixed 120. **Honest negative result**: no variant beats fixed 120 — churn half-decays at ~125 epochs, so 120 was already near-optimal. `--epoch-chain 2` ties it with 5× lower variance. Finding: fully settling a layer *stalls* depth growth (per-layer convergence isn't the goal) | [→](RESULTS.md) |
+| Recursion (`--recur`, `--seq`) | weight-tied recursion — `--recur K` iterates a layer K times (parameter compression); `--seq` is RDDLGN-style temporal recurrence (one image row per step, BPTT, `s_t = L([x_t; s_{t-1}])`). Both **collapse from random init and are rescued by identity warm-start**; `--seq` on digits reaches 0.912 (3 seeds) seeing 24 bits/step. Unifying finding: recursing discrete logic needs a near-identity map pointing at *informative* bits (matches RDDLGN's Residual-init requirement). MNIST `--seq` deferred (28-step BPTT too slow interactively) | [→](RESULTS.md) |
 
 **Scaling track — reference** (width / ensembles / bigger budgets, parked):
 
 | experiment | headline | details |
 |---|---|---|
-| Memory-matched width | at equal training memory (4× wider layers), greedy **beats** e2e: 95.0% vs 91.5% mean, 3 seeds | [→](RESULTS.md#memory-matched-comparison-equal-training-memory-greedy-wins) |
-| MNIST first pass | the pattern replicates at 45× the data: memory-matched greedy+skip 84.6% vs e2e 80.1% (absolute numbers far below difflogic-scale budgets, stated honestly) | [→](RESULTS.md#mnist-the-pattern-replicates-first-pass-small-budget) |
-| Ensemble voting (`--ensemble`) | parallel hard circuits + vote: stacks with everything (digits **96.4% — repo best**); on MNIST 4×500-gate members beat the single 2,000-gate best at **half the training memory**; not a substitute for direct width | [→](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever) |
-| MNIST scaling | width is the dominant lever (4,000 gates: 89.8% single) and ensembling stacks: **90.9%** with 4×4,000+skip; more epochs and window×width confirmed dead (+0.1 pt each); 8,000 gates OOMs at 6 GB (pools, not eval temporaries) | [→](RESULTS.md#mnist-scaling-width--ensembles-push-past-90) |
+| Memory-matched width | at equal training memory (4× wider layers), greedy **beats** e2e: 95.0% vs 91.5% mean, 3 seeds | [→](SCALING.md#memory-matched-comparison-equal-training-memory-greedy-wins) |
+| MNIST first pass | the pattern replicates at 45× the data: memory-matched greedy+skip 84.6% vs e2e 80.1% (absolute numbers far below difflogic-scale budgets, stated honestly) | [→](SCALING.md#mnist-the-pattern-replicates-first-pass-small-budget) |
+| Ensemble voting (`--ensemble`) | parallel hard circuits + vote: stacks with everything (digits **96.4% — repo best**); on MNIST 4×500-gate members beat the single 2,000-gate best at **half the training memory**; not a substitute for direct width | [→](SCALING.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever) |
+| MNIST scaling | width is the dominant lever (4,000 gates: 89.8% single) and ensembling stacks: **90.9%** with 4×4,000+skip; more epochs and window×width confirmed dead (+0.1 pt each); 8,000 gates OOMs at 6 GB (pools, not eval temporaries) | [→](SCALING.md#mnist-scaling-width--ensembles-push-past-90) |
 
 Full run logs (environment, commands, raw output): **one GitHub issue per experiment** ([#1](https://github.com/Mming-Lab/greedy-lgn/issues/1) main run … [#10](https://github.com/Mming-Lab/greedy-lgn/issues/10) Forward-Forward), linked from each [RESULTS.md](RESULTS.md) section.
 
@@ -109,6 +112,9 @@ python experiment.py --device cuda                        # same experiment on G
 python experiment.py --window 2 --commit 2 --win-loss all # 2-layer lookahead blocks (+2 pt)
 python experiment.py --objective ff --ff-label-rep 38 --skip-e2e   # Forward-Forward objective
 python experiment.py --objective ff --ff-label-rep 38 --window 2 --commit 2 --ff-neg review --ff-neg-warmup 0.5 --skip-e2e   # best fixed-budget stack
+python experiment.py --group-residual --skip-e2e                              # boosting readout (the winner)
+python experiment.py --warm-start 5 --max-layers 20 --skip-e2e                 # identity init: depth stays productive
+python experiment.py --seq --warm-start 3 --skip-e2e                           # row-sequential recurrence (RDDLGN-style)
 # scaling track (reference)
 python experiment.py --ensemble 4 --skip-e2e              # 4 independent nets + voting
 python experiment.py --device cuda --gates 2000 --skip-input --max-layers 16 --skip-e2e --ensemble 4   # digits best with scaling (96.4%)
@@ -118,12 +124,12 @@ python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --ga
 ## Roadmap / open questions
 
 - [x] **Depth stress test** — backprop dies at ~12 layers, greedy survives 40 ([details](RESULTS.md#depth-stress-test-greedy-survives-40-layers-backprop-dies-at-12)).
-- [x] **Memory-matched comparison** — greedy wins at equal training memory ([details](RESULTS.md#memory-matched-comparison-equal-training-memory-greedy-wins)).
+- [x] **Memory-matched comparison** — greedy wins at equal training memory ([details](SCALING.md#memory-matched-comparison-equal-training-memory-greedy-wins)).
 - [x] **Skip connections** — `--skip-input` makes depth useful; `--skip-all` negative ([details](RESULTS.md#skip-connections-re-exposing-the-input-turns-survivable-depth-into-usable-depth)).
-- [x] **MNIST first pass** — pattern replicates; absolute accuracy still small-budget ([details](RESULTS.md#mnist-the-pattern-replicates-first-pass-small-budget)).
+- [x] **MNIST first pass** — pattern replicates; absolute accuracy still small-budget ([details](SCALING.md#mnist-the-pattern-replicates-first-pass-small-budget)).
 - [x] **Windowed lookahead** — `--window 2` recovers most of the myopia deficit; window > 2 and overlapping commits don't help ([details](RESULTS.md#windowed-lookahead-training-two-layers-ahead-closes-most-of-the-myopia-gap)).
-- [x] **Ensemble voting** — `--ensemble M` stacks with every other lever; repo best on digits (96.4%) and the training-memory-free path to MNIST scaling ([details](RESULTS.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever)).
-- [x] **MNIST scaling, first round** — width × ensembles reaches 90.9%; epochs and window×width are dead ends ([details](RESULTS.md#mnist-scaling-width--ensembles-push-past-90)).
+- [x] **Ensemble voting** — `--ensemble M` stacks with every other lever; repo best on digits (96.4%) and the training-memory-free path to MNIST scaling ([details](SCALING.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever)).
+- [x] **MNIST scaling, first round** — width × ensembles reaches 90.9%; epochs and window×width are dead ends ([details](SCALING.md#mnist-scaling-width--ensembles-push-past-90)).
 - [x] **Forward-Forward objective** — popcount goodness works: behind supervised local CE on digits, ahead on MNIST, and exploits depth without skip wiring ([details](RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist)).
 - [ ] [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses; better input binarization (fixed-budget friendly).
 - [ ] *(parked, scaling track)* MNIST absolute accuracy: 8,000-gate layers (needs the pool-memory fix), FF × width/ensemble, convolutional wiring, CIFAR-10 on [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
