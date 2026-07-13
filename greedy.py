@@ -4,9 +4,11 @@ import time
 from groupsum import GroupSum
 from ff import ForwardForward
 from seq import SeqGroupSum
+from conv import ConvGroupSum
 
 def make_objective(Xtr, Xte, ytr, yte, cfg):
-    cls = (SeqGroupSum if getattr(cfg, "seq", False)
+    cls = (ConvGroupSum if getattr(cfg, "conv", 0) > 0
+           else SeqGroupSum if getattr(cfg, "seq", False)
            else ForwardForward if cfg.objective == "ff" else GroupSum)
     return cls(Xtr, Xte, ytr, yte, cfg)
 

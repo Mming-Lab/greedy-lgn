@@ -174,6 +174,22 @@ def main():
     p.add_argument("--dataset", choices=["digits", "mnist"], default="digits",
                    help="digits: sklearn 8x8 (CPU-friendly). mnist: 28x28, 70k"
                         " samples (GPU + --batch recommended)")
+    p.add_argument("--conv", type=int, default=0, metavar="C",
+                   help="convolutional logic layers, phase 2 (weight-shared"
+                        " kernels + OR-pooling, after conv-DLGN Petersen et al."
+                        " 2024): C channels, each a depth-TREE binary tree of"
+                        " gates whose leaves wire randomly inside a KxK window,"
+                        " replicated over all positions, then POOLxPOOL"
+                        " max(=OR)-pooled. Learned logits per layer ="
+                        " C*(2^TREE-1) gates; unrolled circuit = HxW copies."
+                        " 0 = off. groupsum + window=1 + no-skip only.")
+    p.add_argument("--conv-k", type=int, default=3, metavar="K",
+                   help="conv kernel window size")
+    p.add_argument("--conv-tree", type=int, default=2, metavar="T",
+                   help="gate-tree depth per kernel (2^T leaves, 2^T-1 gates)")
+    p.add_argument("--conv-pool", type=int, default=2, metavar="P",
+                   help="pooling factor per conv layer (1 = no pooling;"
+                        " automatically disabled once the map is too small)")
     p.add_argument("--local", type=int, default=0, metavar="K",
                    help="convolutional wiring, phase 1 (locality prior only, no"
                         " weight sharing): every gate gets a pixel position and"
@@ -225,6 +241,12 @@ def main():
                           or cfg.seq):
         p.error("--local is groupsum + window=1 only (skip-input OK;"
                 " skip-all/carry/recur/seq not yet)")
+    if cfg.conv > 0 and (cfg.objective != "groupsum" or cfg.window > 1
+                         or cfg.skip_input or cfg.skip_all or cfg.carry
+                         or cfg.recur > 1 or cfg.seq or cfg.local > 0
+                         or cfg.warm_start > 0):
+        p.error("--conv is groupsum + window=1 + no-skip only (no recur/seq/"
+                "local/warm-start combination yet)")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
@@ -256,8 +278,8 @@ def main():
             e2e_soft, e2e_hard = run_e2e(Xtr, Xte, ytr, yte,
                                          cfg.e2e_depth or depths[0], cfg)
         before = after = 0
-        if cfg.seq:
-            print("=== (C) simplification skipped (seq: sequential circuit) ===\n")
+        if cfg.seq or cfg.conv:
+            print("=== (C) simplification skipped (seq/conv) ===\n")
         else:
             for ls in members:  # メンバーごとに簡略化+ビット等価検証
                 b, a = simplify(unroll(ls), Xte_s.cpu(), yte.cpu(), cfg)
@@ -285,6 +307,11 @@ def main():
         # 時間展開しての検証は将来課題
         print("=== (C) simplification skipped (seq: sequential circuit with"
               " registers) ===\n")
+        before = after = 0
+    elif cfg.conv:
+        # 位置展開(H*W*C*木)でのゲート列挙は可能だが未実装(将来課題)
+        print("=== (C) simplification skipped (conv: position-unrolled"
+              " enumeration not implemented yet) ===\n")
         before = after = 0
     else:
         before, after = simplify(unroll(layers), Xte_s.cpu(), yte.cpu(), cfg)
