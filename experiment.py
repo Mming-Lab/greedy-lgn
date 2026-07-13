@@ -174,6 +174,12 @@ def main():
     p.add_argument("--dataset", choices=["digits", "mnist"], default="digits",
                    help="digits: sklearn 8x8 (CPU-friendly). mnist: 28x28, 70k"
                         " samples (GPU + --batch recommended)")
+    p.add_argument("--thresholds", type=str, default=None, metavar="SPEC",
+                   help="input binarization override: \"5,10,15\" = absolute"
+                        " thermometer thresholds, \"q4\" = 4 planes at evenly"
+                        " spaced quantiles of the nonzero TRAIN pixels (also the"
+                        " way to add planes). Default: the original fixed"
+                        " (3,7,11) digits / (63,127,191) mnist, bit-identical.")
     p.add_argument("--batch", type=int, default=0,
                    help="minibatch size (0 = full batch, the original behaviour;"
                         " required in practice for mnist on a 6 GB GPU)")
@@ -205,7 +211,8 @@ def main():
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
-    Xtr, Xte, ytr, yte = [t.to(cfg.device) for t in load_data(cfg.dataset)]
+    Xtr, Xte, ytr, yte = [t.to(cfg.device) for t in
+                          load_data(cfg.dataset, thresholds=cfg.thresholds)]
     print(f"data: {cfg.dataset}, {Xtr.shape[0]} train / {Xte.shape[0]} test,"
           f" {Xtr.shape[1]} input bits  (device={cfg.device}"
           + (f", batch={cfg.batch}" if cfg.batch else "") + ")\n")

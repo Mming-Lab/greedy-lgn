@@ -21,12 +21,14 @@ class SeqGroupSum:
         self.cfg, self.ytr, self.yte = cfg, ytr, yte
         self.X, self.Xte = Xtr, Xte     # run_greedyのskip分岐用(seqはno-skip限定)
         self.tau = float(np.sqrt(cfg.gates / cfg.n_class))
-        # thermometer連結 [(X>t1),(X>t2),(X>t3)] から行tのビット列を取り出す添字:
-        # 各閾値ブロック内で t*w..t*w+w の画素 → 1行 = 3*w ビット
+        # thermometer連結 [(X>t1),(X>t2),...] から行tのビット列を取り出す添字:
+        # 各閾値ブロック内で t*w..t*w+w の画素 → 1行 = 面数*w ビット
+        # (面数は入力幅から動的に導出 — --thresholds で面数が変わっても追従)
         w, npix = (8, 64) if cfg.dataset == "digits" else (28, 784)
+        planes = Xtr.shape[1] // npix
         self.T = npix // w
         self.row_idx = [torch.tensor([k * npix + t * w + i
-                                      for k in range(3) for i in range(w)],
+                                      for k in range(planes) for i in range(w)],
                                      device=Xtr.device)
                         for t in range(self.T)]
         self.seq_tr = [Xtr[:, ix] for ix in self.row_idx]

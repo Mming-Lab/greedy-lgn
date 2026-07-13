@@ -74,19 +74,44 @@ class LogicLayer(nn.Module):
             -1, sel.view(1, -1, 1).expand(x.shape[0], -1, 1)).squeeze(-1)
 
 # ----------------------------- data -----------------------------
-def load_data(dataset="digits", seed=0):
+def _parse_thresholds(spec, Xtrain_raw):
+    """--thresholds の解釈。"5,10,15"=絶対閾値 / "q4"=train非ゼロ画素の等間隔
+    分位点でK面(閾値増にも対応)。分位点はtrainのみから計算(テストリーク防止)"""
+    if spec.startswith("q"):
+        K = int(spec[1:])
+        nz = Xtrain_raw[Xtrain_raw > 0]
+        qs = [100.0 * k / (K + 1) for k in range(1, K + 1)]
+        ths = sorted(set(float(np.percentile(nz, q)) for q in qs))
+    else:
+        ths = sorted(float(t) for t in spec.split(","))
+    return ths
+
+def load_data(dataset="digits", seed=0, thresholds=None):
+    """thresholds=None は従来の固定サーモメータ(digits 3/7/11, mnist 63/127/191)
+    とビット等価。指定時のみ新しい二値化パスを通る(タスク23: 入力二値化改善)"""
     if dataset == "mnist":
         from sklearn.datasets import fetch_openml
         X, y = fetch_openml("mnist_784", version=1, return_X_y=True,
                             as_frame=False, parser="liac-arff")  # no pandas needed
         y = y.astype(np.int64)                   # 28x28 pixels, values 0..255
-        Xb = np.concatenate([(X > t).astype(np.float32) for t in (63, 127, 191)], axis=1)
+        ths = ((63, 127, 191) if thresholds is None
+               else _parse_thresholds(thresholds, X[:60000]))
+        Xb = np.concatenate([(X > t).astype(np.float32) for t in ths], axis=1)
         return (torch.tensor(Xb[:60000]), torch.tensor(Xb[60000:]),   # standard split
                 torch.tensor(y[:60000]), torch.tensor(y[60000:]))
     X, y = load_digits(return_X_y=True)          # 8x8 digits, values 0..16
-    Xb = np.concatenate([(X > t).astype(np.float32) for t in (3, 7, 11)], axis=1)
-    Xtr, Xte, ytr, yte = train_test_split(
-        Xb, y, test_size=0.25, stratify=y, random_state=seed)
+    if thresholds is None:                       # 従来パス(ビット等価)
+        Xb = np.concatenate([(X > t).astype(np.float32) for t in (3, 7, 11)], axis=1)
+        Xtr, Xte, ytr, yte = train_test_split(
+            Xb, y, test_size=0.25, stratify=y, random_state=seed)
+    else:
+        # 分位点をtrainだけで計算するため先に生画素で分割(random_state・stratifyが
+        # 同じなら分割インデックスは二値化前後で同一)
+        Xtr_raw, Xte_raw, ytr, yte = train_test_split(
+            X, y, test_size=0.25, stratify=y, random_state=seed)
+        ths = _parse_thresholds(thresholds, Xtr_raw)
+        Xtr = np.concatenate([(Xtr_raw > t).astype(np.float32) for t in ths], axis=1)
+        Xte = np.concatenate([(Xte_raw > t).astype(np.float32) for t in ths], axis=1)
     return (torch.tensor(Xtr), torch.tensor(Xte),
             torch.tensor(ytr), torch.tensor(yte))
 
