@@ -472,3 +472,36 @@ must point at informative bits** — the same conclusion RDDLGN reaches from the
 other side (their Table 7: "Residual" hidden-state init essential, Gaussian
 collapses to 22.6%). MNIST `--seq` is deferred: 28-step BPTT over minibatches is
 too slow for interactive turnaround on a 6 GB GPU (needs a multi-hour batch run).
+
+## Input binarization (`--thresholds`): the diagnosis said "raise them", the data said "add a lower one"
+
+The input has always been a fixed 3-plane thermometer (digits: pixel > 3/7/11,
+MNIST: > 63/127/191). A quick input census (motivated by the circuit
+diagnostics) found 34/192 digits bits **dead** (never fire — corner pixels that
+never exceed even threshold 3) and the fixed thresholds sitting *below* the
+nonzero-pixel quantiles (p25/p50/p75 ≈ 5/10/15) — suggesting quantile-aligned
+thresholds should help. `--thresholds` makes the binarization configurable:
+an absolute list (`--thresholds 5,10,15`) or train-set quantiles
+(`--thresholds q4` = 4 planes, computed on the train split only). Default is
+the original path, bit-identical.
+
+**The diagnosis did not survive contact with the data.** Quantile-aligned
+thresholds *lose* (digits plain 88.2 → 87.3; residual 96.0 → 95.1, seed 1), and
+so does every variant that *raises* the lowest threshold. The only winner goes
+the other way — **keep everything and add a lower plane** (digits `1,3,7,11,15`,
+MNIST `31,63,127,191`): the faint-stroke information below the old lowest
+threshold matters more than reviving dead bits.
+
+| residual, 500 gates, 3 seeds | default | + low plane | Δ |
+|---|---|---|---|
+| digits (`1,3,7,11,15`) | 96.30% | 96.59% | +0.3 pt (2/3 seeds, ceiling) |
+| **MNIST (`31,63,127,191`)** | **89.96%** | **90.71%** | **+0.75 pt (3/3 seeds)** |
+
+MNIST is the referee and the gain *grows* there (90.64/90.73/90.76 — the new
+config's seed spread is 0.12 pt vs 0.47 for the default, so it is also more
+stable). Input bits cost no gates; the only price is a slightly wider layer-1
+wiring pool. Honest caveats: (1) the published residual-alone 90.86% was a
+single draw from an earlier session — the claim here is the same-protocol
+3-seed comparison (89.96 → 90.71), not "beats 90.86"; (2) the champion config
+(residual + skip, 93.85%) has not yet been re-run with the extra plane — that
+is the obvious next check, since an upstream lever should stack.
