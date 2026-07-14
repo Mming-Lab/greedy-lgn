@@ -32,8 +32,8 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
   e176477で公開文書3箇所を修正済み。
 
 ## 現在の看板と土俵(2026-07-15時点の要約)
-実験の詳細経緯・完了タスクの全文は HISTORY.md(ルート・gitignore済みの非公開メモ)。
-公開用の実験記録は docs/RESULTS.md / docs/SCALING.md。
+実験の詳細経緯・完了タスクの全文は HISTORY.md(ルート・コミット済みの生ログ)。
+読み物として整理した実験記録は docs/RESULTS.md / docs/SCALING.md。
 - **手法看板(単発500・土俵内)**: MNIST 残差+skip = 3シード平均 **93.72%**
   (93.82/93.48/93.87、深さ26-34、全ラン identical=True)。
   digits: 残差96.4% / 残差+skip 97.3%
@@ -72,10 +72,11 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
 - docs/RESULTS.md : 実験詳細の本体(セットアップ・数値表・反証された仮説)。
                     今後の実験結果はREADMEでなくここに追記する
 - docs/SCALING.md : スケーリング系(幅・アンサンブル)の詳細
+- HISTORY.md   : (ルート)検証済み結果の全文+完了タスクの経緯の生ログ
+                 (2026-07-15にCLAUDE.mdから分割、コミット済み)
 - requirements.txt, LICENSE(MIT, 著作権者名は要確認)
 - 非公開ローカルメモ(gitignore済み・コミットしない):
   - IDEAS.md   : ユーザーのアイデアノート(かんたん言葉)
-  - HISTORY.md : 検証済み結果の全文+完了タスクの経緯(2026-07-15にCLAUDE.mdから分割)
 
 ## アクティブなタスク(優先順)
 完了タスク(1-14, 16-18, 22-24)の経緯は HISTORY.md 参照。番号は通し番号のまま。
