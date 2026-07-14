@@ -9,7 +9,7 @@
 
 Logic Gate Networks ([difflogic](https://github.com/Felix-Petersen/difflogic), Petersen et al.) learn circuits of 2-input Boolean gates by relaxing gate choice to a softmax over the 16 two-input functions. Once discretized they run with no multipliers, no DSPs, and no floating point — a natural fit for FPGA LUTs. This document is a log of one question: **how far can you get if you refuse to backpropagate across layers at all?**
 
-It is a playground log, not a paper. Nothing here is peer-reviewed; the only "literature search" was asking an AI assistant. I make **no novelty or priority claims** — most of these ideas certainly exist under names I don't know. What follows is honest about the wins *and* the losses, with every number reproducible from the repo.
+It is a playground log, not a paper. Nothing here is peer-reviewed; the only "literature search" was asking an AI assistant. I make **no novelty or priority claims** — many of these ideas may well already exist under names I don't know (I haven't checked, so I can't say either way). What follows is honest about the wins *and* the losses, with every number reproducible from the repo.
 
 ## Why refuse backprop?
 
@@ -23,7 +23,7 @@ The recipe explored here sidesteps all three by construction:
 
 > *Train one logic layer with a local loss (GroupSum + cross-entropy), discretize it immediately, freeze it, and train the next layer on the real 0/1 bits. Stop adding layers when the accuracy plateaus. Then simplify the circuit and verify it is bit-identical.*
 
-Because each frozen layer is hardened *before* the next one trains, later layers learn on genuine Boolean inputs and **the reported accuracy is the hard circuit's** — the discretization gap is structurally zero. Only one layer is ever soft, so float memory is `gates × 16`, independent of depth. Depth is chosen automatically. None of these properties are novel (see *What this borrows*); the interesting part is what happens to accuracy.
+Because each frozen layer is hardened *before* the next one trains, later layers learn on genuine Boolean inputs and **the reported accuracy is the hard circuit's** — the discretization gap is structurally zero. Only one layer is ever soft, so float memory is `gates × 16`, independent of depth. Depth is chosen automatically. Each of these properties comes with a borrowed ingredient (see *What this borrows*); the interesting part is what happens to accuracy.
 
 ## The arena: 500 gates/layer, one network
 

@@ -167,6 +167,7 @@ I have **not** surveyed the literature and don't claim this recipe — or any pi
 - [Deep Differentiable Logic Gate Networks](https://arxiv.org/abs/2210.08277) (Petersen et al., NeurIPS 2022) and [difflogic](https://github.com/Felix-Petersen/difflogic)
 - [Convolutional Differentiable Logic Gate Networks](https://arxiv.org/abs/2411.04732) (NeurIPS 2024) — includes post-training logic synthesis
 - [Light Differentiable Logic Gate Networks](https://arxiv.org/abs/2510.03250) (2025) — depth via reparameterization (the backprop-side answer to the same problem)
+- [Mind the Gap: Removing the Discretization Gap in Differentiable Logic Gate Networks](https://arxiv.org/abs/2506.07500) (2025) — progressively discretizes and freezes layers *during* backprop training. Same freeze mechanism, opposite purpose: it freezes to remove the discretization gap while keeping backprop; this repo freezes to remove backprop (and the gap vanishes as a by-product). Gradient boosting (Friedman) is the other close relative — stagewise residual fitting with frozen discrete weak learners (trees) — which is exactly what `--group-residual` does, except the weak learners here stack on each other's output bits instead of all reading the raw input.
 - [The Forward-Forward Algorithm](https://arxiv.org/abs/2212.13345) (Hinton, 2022)
 - Cascade-Correlation (Fahlman & Lebiere, 1990) — the original "grow and freeze" network
 - Greedy layerwise learning can scale to ImageNet (Belilovsky et al., ICML 2019) — block-wise greedy training with auxiliary heads, the closest relative of `--window`
@@ -182,7 +183,7 @@ MIT
 
 論理ゲートネットワーク(DLGN)を**逆伝播なしで1層ずつ**学習する実証実験です。各層をローカルな損失(GroupSum+交差エントロピー)で学習したら**即座に離散化して凍結**し、次の層は本物の0/1ビットの上で学習します。検証精度が頭打ちになったら層の追加を止めるため、深さは自動決定されます。学習後に回路を簡略化し、出力が完全に同一であることをビット単位で検証します。
 
-> **論文も読まない素人がAIと壁打ちしながらのお遊びです。** AIとアイデアを出し合って、実験して、精度(ポイント)の変化を楽しんでいるだけです。査読も受けていませんし、文献調査もAIに聞いた程度なので、新規性や優先権は一切主張しません。ここにあるアイデアの多くは、私が知らない名前で既に存在しているはずです。再現できる遊びのログとして読んでください。もし既存研究と重複していたら、それが普通です — issueで教えてもらえると助かります。
+> **論文も読まない素人がAIと壁打ちしながらのお遊びです。** AIとアイデアを出し合って、実験して、精度(ポイント)の変化を楽しんでいるだけです。査読も受けていませんし、文献調査もAIに聞いた程度なので、新規性や優先権は一切主張しません。ここにあるアイデアの多くは、私が知らない名前で既に存在しているかもしれません（調べていないので、あるとも無いとも言えません）。再現できる遊びのログとして読んでください。もし既存研究と重複していたら、それが普通です — issueで教えてもらえると助かります。
 
 本線は**500ゲート/層・単発ネットの固定予算**です。この遊びの主役は「計算資源を増やさずにアイデアだけでポイントがどれだけ動くか」で、MNISTを審判にした現在の階段は **素74.3% → 先読み窓76.6% → FF+窓+誤答復習82.0% → 残差readout(`--group-residual`)90.9% → 残差+skip 93.7%**(単発500ゲートのリポジトリ記録・看板。3シード平均93.72、全ラン**ビット等価検証済み**)。**明確な勝者は残差readout**です — 素のgreedyは各層の答えを捨てて最終層だけで答えるせいで深さとともに劣化しますが、各層のクラス予測を累積する(=素朴なブースティング)だけで劣化が消えます。さらに**上流の入力二値化**(土俵の外)で「低い閾値の面を足す」(`--thresholds`)と残差単体90.0→90.7%(3シード全勝)、看板の残差+skipに重ねると3シード平均が**94.27%**へ(+0.55pt、ベスト単発94.60%、検証済み)。ただしこれは入力の符号化を変える前処理(面を1枚足す=入力ビット増)でどの手法にも効くので**土俵の外**に置き、看板は93.72%のまま。詳細な表は英語本文の「The arena」を参照。
 
