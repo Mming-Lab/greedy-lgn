@@ -3,7 +3,7 @@
 ### Vol. 1: the climb to 94% on MNIST, and what each lever taught
 
 > **日本語アブストラクト（要約）**
-> 論理ゲートネットワーク（LGN）を、層をまたぐ逆伝播なしで1層ずつ学習する実証実験の記録です。各層をローカル損失で学習したら即座に0/1へ離散化して凍結し、次の層は本物のビット上で学習します。**500ゲート/層・単発ネットという固定予算**の下、素の88%から出発し、残差readout（＝素朴なブースティング）・skip配線・入力二値化の積み重ねで、**MNISTをビット等価検証済みで94.3%（3シード平均、単発ベスト94.6%）**まで到達しました。これは新手法の提案ではなく、**既存部品の組合せで制約下どこまで行けるかの探検記**です（勝ちも負けも正直に記録。新規性・優先権は主張しません。既出ならご指摘ください）。到達値は同予算のe2e逆伝播や、20倍以上のゲートを使うdifflogic（~97.7%）には及びません — その距離こそが次の章の題材です。
+> 論理ゲートネットワーク（LGN）を、層をまたぐ逆伝播なしで1層ずつ学習する実証実験の記録です。各層をローカル損失で学習したら即座に0/1へ離散化して凍結し、次の層は本物のビット上で学習します。**500ゲート/層・単発ネットという固定予算**の下、素の88%から出発し、残差readout（＝素朴なブースティング）・skip配線・入力二値化の積み重ねで、**MNISTをビット等価検証済みで94.3%（3シード平均、単発ベスト94.6%）**まで到達しました。これは新手法の提案ではなく、**既存部品の組合せで制約下どこまで行けるかの探検記**です（勝ちも負けも正直に記録。新規性・優先権は主張しません。既出ならご指摘ください）。同じ単発500の土俵なら**逆伝播(e2e)には勝っています**（e2eは深さを使えず81.8%で頭打ち、greedyは+12.5pt上回る）。ただし20倍以上のゲートを使うdifflogic（~97.7%）にはまだ遠く — その距離こそが次の章の題材です。
 
 ---
 
@@ -29,15 +29,18 @@ Because each frozen layer is hardened *before* the next one trains, later layers
 
 Every experiment on the main track runs at a **fixed budget — 500 gates per layer, a single network** — because the game is watching which *ideas* move the accuracy, not how much compute is spent. Two datasets play two roles: **`sklearn` digits (8×8)** is the fast bench (seconds per run, deterministic on CPU) for direction-finding; **MNIST (28×28)** is the referee — claims are only trusted once MNIST agrees. When the two disagree, MNIST wins.
 
-The honest starting line, on digits:
+Greedy (no cross-layer backprop) vs end-to-end backprop, same single-500 budget:
 
-| | greedy (this repo) | end-to-end backprop |
+| 500 gates/layer, single net | greedy (this repo) | end-to-end backprop |
 |---|---|---|
-| hard-circuit test accuracy | 88.2% | **93.6%** |
-| discretization gap | **0 (by construction)** | 0.0 here, +8.2 pt at a smaller/undertrained config |
-| float logits during training | **8,000 (one layer)** | 32,000 (×4) |
+| digits, plain greedy | 88.2% | **93.6%** |
+| digits, best lever (residual) | **96.4%** | 93.6% |
+| MNIST, plain greedy | 74.3% | **81.8%** (best; peaks @depth 6) |
+| MNIST, best lever (residual+skip+low-plane) | **94.3%** | 81.8% |
+| discretization gap | **0 (by construction)** | present, grows with depth |
+| usable depth | 40+ (residual: 27–40) | **collapses past ~6–8** |
 
-Plain local training loses ~5 pt to backprop. The rest of this log is about buying that back — and then some — without ever letting a gradient cross a frozen layer.
+At the plain starting line, greedy *loses* to backprop (~5 pt digits, ~7 pt MNIST) — the honest cost of refusing cross-layer gradients. But once the levers are on, greedy *overtakes* it, and the gap widens with dataset size: **+2.8 pt on digits, +12.5 pt on MNIST** (94.3 vs 81.8). The reason is the last row — a single-500 e2e net can't use depth (its gradients vanish past ~6 layers, so it peaks at 81.8% @depth 6 and then collapses), while greedy has no cross-layer gradient to vanish and stays productive to 27–40 layers. The rest of this log is how that reversal is bought, one lever at a time.
 
 ## The climb (MNIST, 500 gates/layer, single net)
 
@@ -82,7 +85,7 @@ Every flagship number is checked bit-exact: after training, a pure-Python pass f
 
 The limits, stated plainly:
 
-- **Still behind backprop at equal config** (~5 pt on digits) and **far from difflogic's ~97.7%**, which uses >20× the gates. 94% here is "impressive *given the constraints*", not state of the art.
+- **The comparison that matters is to difflogic, not to e2e.** At the same single-500 budget, greedy now *beats* end-to-end backprop (+12.5 pt on MNIST) because e2e can't use depth — so "behind backprop" is no longer the honest framing. The real distance is to **difflogic's ~97.7%**, which uses >20× the gates. 94% here is "impressive *given the constraints*", not state of the art.
 - **Convolution is memory-bound** on a 6 GB laptop GPU; the MNIST conv verdict is deferred, not delivered.
 - **Single machine, small budgets.** No claim survives contact with a real scaling study.
 
