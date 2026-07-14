@@ -52,7 +52,7 @@ Hard-circuit test accuracy, 500 gates/layer, single net:
 | dataset | plain greedy | greedy, best lever | end-to-end backprop |
 |---|---|---|---|
 | **digits** (8×8) | 88.2% | **96.4%** (residual) | 93.6% |
-| **MNIST** (28×28) | 74.3% | **94.3%** (residual+skip+low-plane) | 81.8% (peaks @depth 6) |
+| **MNIST** (28×28) | 74.3% | **93.7%** (residual+skip) | 81.8% (peaks @depth 6) |
 
 Why backprop can't be pushed further — and greedy can:
 
@@ -62,7 +62,7 @@ Why backprop can't be pushed further — and greedy can:
 | usable depth | 40+ (residual productive to 27–40) | **collapses past ~6–8** (vanishing gradients) |
 | float logits during training | **one layer** (500×16) | whole net (depth × 500×16) |
 
-Two things to read off this. **At the plain starting line, greedy loses to backprop** (~5 pt digits, ~7 pt MNIST) — the honest cost of refusing cross-layer gradients. But **once the levers are on, greedy overtakes backprop, and the gap widens with dataset size**: +2.8 pt on digits, **+12.5 pt on MNIST** (94.3 vs 81.8). The reason is in the last two rows — e2e backprop can't use depth (gradients vanish past ~6 layers, so its single-500 net peaks at 81.8% @depth 6 and then collapses), whereas greedy has no cross-layer gradient to vanish and stays productive to 27–40 layers. From the plain starting line, the idea ladder (hard-circuit test accuracy, gap structurally zero throughout):
+Two things to read off this. **At the plain starting line, greedy loses to backprop** (~5 pt digits, ~7 pt MNIST) — the honest cost of refusing cross-layer gradients. But **once the levers are on, greedy overtakes backprop, and the gap widens with dataset size**: +2.8 pt on digits, **+11.9 pt on MNIST** (93.7 vs 81.8). The reason is in the last two rows — e2e backprop can't use depth (gradients vanish past ~6 layers, so its single-500 net peaks at 81.8% @depth 6 and then collapses), whereas greedy has no cross-layer gradient to vanish and stays productive to 27–40 layers. From the plain starting line, the idea ladder (hard-circuit test accuracy, gap structurally zero throughout):
 
 | idea (500 gates, single net) | digits (3 seeds) | MNIST |
 |---|---|---|
@@ -73,12 +73,11 @@ Two things to read off this. **At the plain starting line, greedy loses to backp
 | FF + window | 88.0% | 78.2% |
 | FF + window + hard-negative mining (`--ff-neg`) | 89.7%² | 82.0%³ |
 | **residual/boosting readout (`--group-residual`)** | **96.4%** | **90.9%** |
-| **residual + skip-input** | **97.3%** | **93.9%⁴** |
-| **residual + skip + low-plane binarization (`--thresholds`)** | — | **94.3%⁵** |
+| **residual + skip-input** | **97.3%** | **93.7%⁴** |
 
-¹ skip alone is a depth/width-synergy lever — modest at 500-gate single net, and it actively *hurts* FF, so it isn't a fixed-budget winner. ² `mix` negatives. ³ `review` + 0.5 warm-up. ⁴ at depth 38 (still slowly climbing); residual-alone 90.9% converges at depth 9. ⁵ **94.27% (3-seed mean, best single 94.60%)** vs a same-protocol control **93.72%** — the low plane wins on **3/3 seeds** (+0.26/+1.12/+0.26 pt). Every run is **bit-exactly verified** through simplification (`identical=True`). It is the repo record; the depth stays ~27–40 (seed 2 was still climbing at the cap), so unlike the seed-1 draw it is not consistently shallower — the accuracy gain is the robust claim.
+¹ skip alone is a depth/width-synergy lever — modest at 500-gate single net, and it actively *hurts* FF, so it isn't a fixed-budget winner. ² `mix` negatives. ³ `review` + 0.5 warm-up. ⁴ **93.72% (3-seed mean, 93.82/93.48/93.87), depth 26–34**; residual-alone 90.9% converges at depth 9. Every run is **bit-exactly verified** through simplification (`identical=True`). This is the method headline — input binarization is held fixed at the default here (see the preprocessing note below for the +0.55 pt the input encoding buys on top).
 
-**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last, which is exactly why accuracy decays with depth (shallow layers see fresh image info, but their good answers are discarded). Accumulate each layer's prediction instead — plain boosting — and the decay vanishes: MNIST climbs from 74.3% to **90.9%** (single 500-gate net, no skip/window/ensemble, not overfitting: train 91.9 / test 90.6). That already matches the scaling-track flagship below (4,000 gates × 4 ensemble) at a fraction of the area. Stacking `--skip-input` on top — residual accumulates the *answer*, skip re-exposes the *image*, different cures for the same decay — compounds to **93.9%**, a new repo record, still at 500 gates single net (honest cost: depth grows 9 → 38, i.e. more latency). The readout is plain boosting / deep supervision — the observation here is just that it fixes greedy-LGN's depth decay cleanly. [→](docs/RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes)
+**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last, which is exactly why accuracy decays with depth (shallow layers see fresh image info, but their good answers are discarded). Accumulate each layer's prediction instead — plain boosting — and the decay vanishes: MNIST climbs from 74.3% to **90.9%** (single 500-gate net, no skip/window/ensemble, not overfitting: train 91.9 / test 90.6). That already matches the scaling-track flagship below (4,000 gates × 4 ensemble) at a fraction of the area. Stacking `--skip-input` on top — residual accumulates the *answer*, skip re-exposes the *image*, different cures for the same decay — compounds to **93.7%** (3-seed mean 93.72), a new repo record, still at 500 gates single net (honest cost: depth grows 9 → ~30, i.e. more latency). The readout is plain boosting / deep supervision — the observation here is just that it fixes greedy-LGN's depth decay cleanly. [→](docs/RESULTS.md#residualboosting-readout-accumulate-the-answer-and-the-depth-decay-vanishes)
 
 ## Off the main track: scaling levers
 
@@ -98,7 +97,7 @@ Wider layers (`--gates`) and ensembles (`--ensemble`) buy accuracy by spending c
 | Identity warm-start (`--warm-start`) | init each layer to reproduce the previous one (ResNet identity block in logic gates), then refine. **Retires the lookahead window**: on plain greedy digits, 94.5% vs the window's 90.4% (3 seeds), and keeps depth productive to 15 layers. Beats the window by ~+11 pt on MNIST too, but single-seed MNIST is noisy (~4 pt) and it stays **below the residual champion** — its value is fixing *plain* greedy, not replacing residual. `--group-boost` (AdaBoost-style reweighting on residual) is a modest +0.43 pt on MNIST | [→](docs/RESULTS.md) |
 | Adaptive per-layer epochs (`--epoch-stop` / `--epoch-chain`) | stop each layer when its gate-argmax churn settles, instead of a fixed 120. **Honest negative result**: no variant beats fixed 120 — churn half-decays at ~125 epochs, so 120 was already near-optimal. `--epoch-chain 2` ties it with 5× lower variance. Finding: fully settling a layer *stalls* depth growth (per-layer convergence isn't the goal) | [→](docs/RESULTS.md) |
 | Recursion (`--recur`, `--seq`) | weight-tied recursion — `--recur K` iterates a layer K times (parameter compression); `--seq` is RDDLGN-style temporal recurrence (one image row per step, BPTT, `s_t = L([x_t; s_{t-1}])`). Both **collapse from random init and are rescued by identity warm-start**; `--seq` on digits reaches 0.912 (3 seeds) seeing 24 bits/step. Unifying finding: recursing discrete logic needs a near-identity map pointing at *informative* bits (matches RDDLGN's Residual-init requirement). MNIST `--seq` deferred (28-step BPTT too slow interactively) | [→](docs/RESULTS.md) |
-**Upstream of the arena — preprocessing, not a learning idea**: input binarization (`--thresholds`). The diagnosis (dead bits, thresholds below quantiles) said *raise* them — the data said the opposite: quantile thresholds lose, **adding a lower plane wins** (MNIST residual 89.96 → 90.71%, 3/3 seeds, and it feeds the verified 94.27% 3-seed record). A data-representation lever that transfers to any method, so it is credited separately from the method ideas. [→](docs/RESULTS.md)
+**Upstream of the arena — preprocessing, not a learning idea**: input binarization (`--thresholds`). The diagnosis (dead bits, thresholds below quantiles) said *raise* them — the data said the opposite: quantile thresholds lose, **adding a lower plane wins** (MNIST residual 89.96 → 90.71%, 3/3 seeds). Stacked on the residual+skip method headline (93.72%), it lifts the 3-seed mean to **94.27%** (+0.55 pt, 3/3 seeds, best single 94.60%, every run bit-exactly verified). But this changes the *input encoding* (it adds a fourth threshold plane, i.e. more input bits), not the network or the learning — a data-representation lever that transfers to any method — so it is held **off the arena** and credited separately from the method ideas. The headline stays 93.72%. [→](docs/RESULTS.md)
 
 **Scaling track — reference** (width / ensembles / bigger budgets, parked):
 
@@ -142,7 +141,7 @@ python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30 --ga
 - [x] **Ensemble voting** — `--ensemble M` stacks with every other lever; repo best on digits (96.4%) and the training-memory-free path to MNIST scaling ([details](docs/SCALING.md#ensemble-voting-parallel-circuits-are-the-training-memory-free-width-lever)).
 - [x] **MNIST scaling, first round** — width × ensembles reaches 90.9%; epochs and window×width are dead ends ([details](docs/SCALING.md#mnist-scaling-width--ensembles-push-past-90)).
 - [x] **Forward-Forward objective** — popcount goodness works: behind supervised local CE on digits, ahead on MNIST, and exploits depth without skip wiring ([details](docs/RESULTS.md#forward-forward-objective-popcount-goodness--behind-on-digits-ahead-on-mnist)).
-- [ ] [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses; better input binarization (fixed-budget friendly).
+- [ ] [Mono-Forward](https://arxiv.org/abs/2501.09238)-style projection losses.
 - [ ] *(parked, scaling track)* MNIST absolute accuracy: 8,000-gate layers (needs the pool-memory fix), FF × width/ensemble, convolutional wiring, CIFAR-10 on [difflogic](https://github.com/Felix-Petersen/difflogic) CUDA kernels.
 - [ ] Simplify *between* growth steps (currently done once at the end) and rewire the next layer to the simplified circuit.
 - [ ] Export simplified circuits to Verilog / run through ABC for comparison with proper logic synthesis.
@@ -185,11 +184,11 @@ MIT
 
 > **論文も読まない素人がAIと壁打ちしながらのお遊びです。** AIとアイデアを出し合って、実験して、精度(ポイント)の変化を楽しんでいるだけです。査読も受けていませんし、文献調査もAIに聞いた程度なので、新規性や優先権は一切主張しません。ここにあるアイデアの多くは、私が知らない名前で既に存在しているはずです。再現できる遊びのログとして読んでください。もし既存研究と重複していたら、それが普通です — issueで教えてもらえると助かります。
 
-本線は**500ゲート/層・単発ネットの固定予算**です。この遊びの主役は「計算資源を増やさずにアイデアだけでポイントがどれだけ動くか」で、MNISTを審判にした現在の階段は **素74.3% → 先読み窓76.6% → FF+窓+誤答復習82.0% → 残差readout(`--group-residual`)90.9% → 残差+skip 93.9% → +低側面二値化 94.3%**(単発500ゲートのリポジトリ記録。94.3%は3シード平均・ベスト単発94.60%で、対照93.72%に3/3勝、全ラン**ビット等価検証済み**の看板です)。**明確な勝者は残差readout**です — 素のgreedyは各層の答えを捨てて最終層だけで答えるせいで深さとともに劣化しますが、各層のクラス予測を累積する(=素朴なブースティング)だけで劣化が消えます。さらに上流の入力二値化で「低い閾値の面を足す」(`--thresholds`)と残差90.0→90.7%(3シード全勝)。詳細な表は英語本文の「The arena」を参照。
+本線は**500ゲート/層・単発ネットの固定予算**です。この遊びの主役は「計算資源を増やさずにアイデアだけでポイントがどれだけ動くか」で、MNISTを審判にした現在の階段は **素74.3% → 先読み窓76.6% → FF+窓+誤答復習82.0% → 残差readout(`--group-residual`)90.9% → 残差+skip 93.7%**(単発500ゲートのリポジトリ記録・看板。3シード平均93.72、全ラン**ビット等価検証済み**)。**明確な勝者は残差readout**です — 素のgreedyは各層の答えを捨てて最終層だけで答えるせいで深さとともに劣化しますが、各層のクラス予測を累積する(=素朴なブースティング)だけで劣化が消えます。さらに**上流の入力二値化**(土俵の外)で「低い閾値の面を足す」(`--thresholds`)と残差単体90.0→90.7%(3シード全勝)、看板の残差+skipに重ねると3シード平均が**94.27%**へ(+0.55pt、ベスト単発94.60%、検証済み)。ただしこれは入力の符号化を変える前処理(面を1枚足す=入力ビット増)でどの手法にも効くので**土俵の外**に置き、看板は93.72%のまま。詳細な表は英語本文の「The arena」を参照。
 
 **スケーリングレバー**(幅=`--gates` とアンサンブル=`--ensemble`)は別トラック(参考、[SCALING.md](docs/SCALING.md))です。計算資源=推論回路面積を突っ込めば確実に精度を買えますが、アイデアの良し悪しは分かりません。参考値: digits 96.4%(2,000ゲート+skip+×4多数決)、MNIST 90.9%(4,000ゲート+skip+×4 soft vote)。**残差readoutは単発500ゲートでこのMNIST旗艦に並び、+skipで超えました**。このトラックは休止中です。
 
-**同じ単発500の土俵で、逆伝播(e2e)と比べると:** 素のgreedyは出発点では逆伝播に負けます(digits 88.2 vs 93.6、MNIST 74.3 vs 81.8)。でもレバーを入れると逆転し、データが大きいほど差が開きます — **digits +2.8pt(96.4 vs 93.6)、MNIST +12.5pt(94.3 vs 81.8)**。理由は深さ: 逆伝播は勾配消失で深さ6あたりが頭打ち(単発500のe2eは81.8%@6でピーク→以降崩壊)、greedyは層またぎの勾配が無いので27〜40層まで深さを使える。加えて離散化ギャップが構造的にゼロ・学習メモリが1層分、という利点もあります。
+**同じ単発500の土俵で、逆伝播(e2e)と比べると:** 素のgreedyは出発点では逆伝播に負けます(digits 88.2 vs 93.6、MNIST 74.3 vs 81.8)。でもレバーを入れると逆転し、データが大きいほど差が開きます — **digits +2.8pt(96.4 vs 93.6)、MNIST +11.9pt(93.7 vs 81.8)**。理由は深さ: 逆伝播は勾配消失で深さ6あたりが頭打ち(単発500のe2eは81.8%@6でピーク→以降崩壊)、greedyは層またぎの勾配が無いので27〜40層まで深さを使える。加えて離散化ギャップが構造的にゼロ・学習メモリが1層分、という利点もあります。
 
 **実験一覧(本線=固定予算のアイデア勝負)** — 詳細は各リンク先:
 
@@ -207,7 +206,7 @@ MIT
 | 畳み込み配線(`--local` / `--conv`、進行中) | 近くの画素だけ見る配線 → 重み共有カーネル+プーリングの本物の畳み込みへ | 局所配線単体はMNISTで負け、本物の畳み込みはdigitsで密と同点。MNIST審判はメモリ律速で保留(28×28がVRAM超) [→](docs/RESULTS.md) |
 
 **本線の外のレバー**(学習アイデアの勝負とは別枠):
-- **前処理 — 入力二値化(`--thresholds`)**: 画素を白黒に割るしきい値の調整。薄い筆致を拾う低いしきい値を足すのが正解で、+0.75pt・**最高記録94.3%(3シード平均)に寄与**。学習の工夫ではなくデータ表現の改善なので、どの手法にも効く=手法の手柄とは区別して数える [→](docs/RESULTS.md)
+- **前処理 — 入力二値化(`--thresholds`)**: 画素を白黒に割るしきい値の調整。薄い筆致を拾う低いしきい値(面)を足すのが正解で、残差単体で+0.75pt。手法の看板(残差+skipの**93.72%**、3シード平均)に重ねると3シード平均が**94.27%**へ(+0.55pt、3/3勝、検証済み)。ただしこれは学習でもネットワークでもなく**入力の符号化を変える**(面を1枚足す=入力ビットを増やす)前処理でどの手法にも効くので、**土俵の外**に置き手法の手柄とは区別して数える(看板は93.72%のまま) [→](docs/RESULTS.md)
 - **スケーリング**(参考、[SCALING.md](docs/SCALING.md)): 計算資源=推論回路面積で精度を買う側。メモリ等価比較(学習メモリを揃えるとgreedyがe2eに全勝 95.0 vs 91.5)/アンサンブル投票(`--ensemble`、独立回路を並べて多数決 — digits 96.4%)/MNISTスケーリング(幅が支配的、90.9%)
 
 **その他の死にレバー**(正直な記録 — いずれも既存フラグの設定変更・組合せで実測した負け): エポック増(`--epochs`2倍で+0.1pt)、window×幅・window×skip(組合せが加算されない)、warmupなしのhard負例(`--ff-neg hard`単体は崩壊)、分位点閾値(`--thresholds q3〜q5`は負け — 診断は「上げろ」、データは「低い面を足せ」だった)。

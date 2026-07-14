@@ -37,10 +37,12 @@ its *best* over depths, since e2e can't use much depth: a single 500-gate/layer 
 peaks at **81.76% @ depth 6** and then collapses (80.6 @4, 81.8 @6, 77.7 @8, 71.7 @10 —
 vanishing gradients, `--e2e-depth` sweep, seed 1, `--batch 512`). Plain greedy on MNIST
 is 74.3% — so at the plain starting line e2e wins by ~7 pt. But the residual lever lifts
-greedy to 90.9% and the full champion to **94.3%**, while e2e is stuck at 81.8% because
-it cannot go deep. Net: on the same single-500 budget, **backprop-free greedy beats
-end-to-end backprop by +12.5 pt on MNIST** (94.3 vs 81.8), up from +2.8 pt on digits
-(96.4 vs 93.6). The mechanism is the depth-stress result below — e2e's gradients vanish
+greedy to 90.9% and the method headline (residual+skip) to **93.7%** (3-seed mean 93.72),
+while e2e is stuck at 81.8% because it cannot go deep. Net: on the same single-500 budget,
+**backprop-free greedy beats end-to-end backprop by +11.9 pt on MNIST** (93.7 vs 81.8),
+up from +2.8 pt on digits (96.4 vs 93.6). (An off-arena preprocessing lever — a lower
+input-binarization plane — adds +0.55 pt on top for 94.27%; see the input-binarization
+section.) The mechanism is the depth-stress result below — e2e's gradients vanish
 past ~6–8 layers; greedy has no cross-layer gradient to vanish.
 
 Also observed: **duplicate-gate merging found 0 duplicates** — with fixed random
@@ -361,11 +363,11 @@ The effect is large, and it holds on the arbiter:
 |---|---|---|
 | residual (no skip) | 90.86% | 9 (converges fast, shallow) |
 | residual + `--skip-input` (cap 25) | 93.12% | 24 |
-| residual + `--skip-input` (cap 40) | **93.85%** | 38 (still creeping up, diminishing) |
+| residual + `--skip-input` (cap 40) | **93.82%** (seed 1; 3-seed mean **93.72%** = headline) | 34 |
 
-digits likewise: residual 96.4% → residual+skip **97.3%**. The 93.85% is a single 500-gate net with no ensemble and no width scaling — it beats the previous repo best of 90.9% (which needed 4,000-gate layers × 4 ensemble ≈ 16× the gates plus voting). Honest cost: skip's +3 pt comes with a much deeper circuit (9 → 38 layers = longer critical-path latency), so residual-alone (90.86% @9) is the shallow/fast champion and residual+skip (93.85% @38) is the max-accuracy champion — pick by whether latency or accuracy matters.
+digits likewise: residual 96.4% → residual+skip **97.3%**. The headline is the 3-seed mean **93.72%** (verified; seed 1 shown above at 93.82% @34) — a single 500-gate net with no ensemble and no width scaling, it beats the previous repo best of 90.9% (which needed 4,000-gate layers × 4 ensemble ≈ 16× the gates plus voting). Honest cost: skip's +3 pt comes with a much deeper circuit (9 → ~30 layers = longer critical-path latency), so residual-alone (90.86% @9) is the shallow/fast champion and residual+skip (93.72%) is the max-accuracy champion — pick by whether latency or accuracy matters.
 
-**Residual also revives the carry window (①+②).** Windowed lookahead was near-useless on plain greedy, and the carry-forward window (`--carry`, keeping the uncommitted lookahead layer instead of discarding it) actually *hurt* on its own (digits 90.2 vs 91.6). On top of residual, both flip positive: `--window 2 --commit 1 --win-loss all` adds +1.1 pt (MNIST 90.86 → 92.00), and adding `--carry` adds a further +0.25 pt (→ 92.25). The sign flip is the point — a carried layer's value in plain mode is its (fragile) features, which go stale when the layer below is frozen; in residual mode its value is the *answer correction* it contributes, which stays portable. So the project owner's "①+② should revive ②" was right in direction, though the gain is small and still below residual+skip (93.85%). Residual now supports `--window`; W=1 stays bit-exact.
+**Residual also revives the carry window (①+②).** Windowed lookahead was near-useless on plain greedy, and the carry-forward window (`--carry`, keeping the uncommitted lookahead layer instead of discarding it) actually *hurt* on its own (digits 90.2 vs 91.6). On top of residual, both flip positive: `--window 2 --commit 1 --win-loss all` adds +1.1 pt (MNIST 90.86 → 92.00), and adding `--carry` adds a further +0.25 pt (→ 92.25). The sign flip is the point — a carried layer's value in plain mode is its (fragile) features, which go stale when the layer below is frozen; in residual mode its value is the *answer correction* it contributes, which stays portable. So the project owner's "①+② should revive ②" was right in direction, though the gain is small and still below residual+skip (93.72%). Residual now supports `--window`; W=1 stays bit-exact.
 
 Full run log: [issue #11](https://github.com/Mming-Lab/greedy-lgn/issues/11).
 
@@ -387,7 +389,7 @@ question was whether *explicit* reweighting adds anything.
 digits 3-seed likewise: +0.67 pt at B=3. **Honest verdict:** a real but small
 gain (2/3 seeds win, mean +0.43 pt on MNIST), consistent with the hypothesis
 that gradient boosting already focuses on hard samples implicitly — the explicit
-reweight only doubles down. Does not touch the residual+skip champion (93.85%).
+reweight only doubles down. Does not touch the residual+skip champion (93.72%, 3-seed mean).
 
 ## Identity warm-start (`--warm-start`): kills the lookahead window, not the residual
 
@@ -516,7 +518,7 @@ wiring pool. Honest caveat: the published residual-alone 90.86% was a single
 draw from an earlier session — the claim here is the same-protocol 3-seed
 comparison (89.96 → 90.71), not "beats 90.86".
 
-**Champion config check — new repo record, verified, 3 seeds.** Stacking the
+**Stacked on the champion — off-arena preprocessing, verified, 3 seeds.** Stacking the
 low plane on the champion (residual + `--skip-input`, cap 40), each seed run
 side-by-side with a same-protocol control:
 
@@ -528,10 +530,13 @@ side-by-side with a same-protocol control:
 | **mean** | **93.72%** | **94.27%** (+0.55, **3/3 seeds**: +0.26/+1.12/+0.26) |
 | bit-exact | identical = True (all) | identical = True (all) |
 
-**94.27% (3-seed mean, best single 94.60%) is the new repo record**, and every
-run is verified end-to-end: with simplify now supporting the residual all-layer
-readout, each simplified circuit (~10.5–16k gates, 80–81% of raw) is confirmed
-bit-identical to the trained network — the old unverified 93.85% is retired.
+**The method headline is the control's 93.72% (3-seed mean); the low plane adds
++0.55 pt for 94.27% (best single 94.60%).** But it changes the *input encoding*
+(a fourth threshold plane = more input bits), not the network or the learning, so
+it is credited **off the arena** — not as the headline. Every run is verified
+end-to-end: with simplify now supporting the residual all-layer readout, each
+simplified circuit (~10.5–16k gates, 80–81% of raw) is confirmed bit-identical to
+the trained network — the old unverified 93.85% is retired.
 Honest correction: the seed-1 draw looked *shallower/smaller/faster* than its
 control, but that did not hold across seeds (seed 2's low-plane run climbed to
 the depth-40 cap and was still rising). So the robust claim is just the

@@ -62,8 +62,8 @@ Ported via `--dataset mnist` (28×28 → 3-threshold thermometer → 2,352 bits,
   (~97.7% on MNIST, using tens of thousands of gates per layer and much larger training
   budgets). This is a deliberately small-budget first pass (≤2,000 gates/layer, 30
   epochs/layer, single seed) where the meaningful comparison is greedy vs end-to-end
-  *under the same budget*. Closing the absolute gap — wider layers, more epochs, better
-  input binarization — is future work.
+  *under the same budget*. Closing the absolute gap — wider layers, more epochs — is
+  future work.
 - Runtime: ~13 min for the 2,000-gate greedy run on an RTX 3060 Laptop. CPU would take
   hours; `digits` remains the CPU-friendly configuration.
 
@@ -180,8 +180,7 @@ Findings:
 4. **Honest positioning unchanged in kind, narrowed in degree**: the gap to
    difflogic-scale results (~97.7%) shrinks from ~13 pt to ~7 pt, still with far
    smaller budgets (≤4,000 gates/layer, 30 epochs, single machine). Remaining known
-   levers: 8,000-gate layers (see below), better input binarization, and
-   convolutional wiring.
+   levers: 8,000-gate layers (see below) and convolutional wiring.
 5. **8,000 gates: OOM at 6 GB, but the partial result is telling.** Before crashing
    while building layer 3, the 8,000-gate run reached **90.01% at depth 2** — above
    the best completed single 4,000-gate net (89.77% at depth 7), so width is still
