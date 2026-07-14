@@ -45,17 +45,19 @@ input bits ──► [train layer 1 (soft, local GroupSum loss)]
 
 ## The arena: 500 gates/layer, one network
 
-Everything on the main track runs at a **fixed budget — 500 gates/layer, single network** — because the game here is watching which *ideas* move the accuracy points, not how much compute gets spent. The starting point, on `sklearn` digits (8×8, thermometer-binarized to 192 bits), CPU:
+Everything on the main track runs at a **fixed budget — 500 gates/layer, single network** — because the game here is watching which *ideas* move the accuracy points, not how much compute gets spent. Greedy (this repo, no cross-layer backprop) vs end-to-end backprop at that same budget, hard-circuit test accuracy on both datasets:
 
-| | greedy (this repo) | end-to-end backprop |
+| 500 gates/layer, single net | greedy (this repo) | end-to-end backprop |
 |---|---|---|
-| depth | **4 (chosen automatically)** | 4 (copied from greedy) |
-| hard-circuit test accuracy | 88.2% | **93.6%** |
-| discretization gap | **0 (by construction)** | 0.0 at this scale |
-| float logits held during training | **8,000 (one layer)** | 32,000 (×4) |
-| circuit after simplification | 2,000 → **1,316 gates (65.8%)**, bit-identical | — |
+| **digits** (8×8), plain greedy | 88.2% (depth 4) | **93.6%** (depth 4) |
+| **digits**, best lever (residual) | **96.4%** | 93.6% |
+| **MNIST** (28×28), plain greedy | 74.3% | **81.8%** (best; peaks @depth 6) |
+| **MNIST**, best lever (residual+skip+low-plane) | **94.3%** | 81.8% |
+| discretization gap | **0 (by construction)** | present, grows with depth (+0.3→1.3 pt) |
+| usable depth | 40+ (residual productive to 27–40) | **collapses past ~6–8** (vanishing gradients) |
+| float logits during training | **one layer** (500×16) | whole net (depth × 500×16) |
 
-Plain local training loses ~5 pt of accuracy to backprop — in exchange for zero discretization gap, ~1/depth training memory, automatic depth, and a simplifiable circuit. From that start, the idea ladder so far (hard-circuit test accuracy, gap still structurally zero throughout):
+Two things to read off this. **At the plain starting line, greedy loses to backprop** (~5 pt digits, ~7 pt MNIST) — the honest cost of refusing cross-layer gradients. But **once the levers are on, greedy overtakes backprop, and the gap widens with dataset size**: +2.8 pt on digits, **+12.5 pt on MNIST** (94.3 vs 81.8). The reason is in the last two rows — e2e backprop can't use depth (gradients vanish past ~6 layers, so its single-500 net peaks at 81.8% @depth 6 and then collapses), whereas greedy has no cross-layer gradient to vanish and stays productive to 27–40 layers. From the plain starting line, the idea ladder (hard-circuit test accuracy, gap structurally zero throughout):
 
 | idea (500 gates, single net) | digits (3 seeds) | MNIST |
 |---|---|---|
@@ -182,7 +184,7 @@ MIT
 
 **スケーリングレバー**(幅=`--gates` とアンサンブル=`--ensemble`)は別トラック(参考、[SCALING.md](docs/SCALING.md))です。計算資源=推論回路面積を突っ込めば確実に精度を買えますが、アイデアの良し悪しは分かりません。参考値: digits 96.4%(2,000ゲート+skip+×4多数決)、MNIST 90.9%(4,000ゲート+skip+×4 soft vote)。**残差readoutは単発500ゲートでこのMNIST旗艦に並び、+skipで超えました**。このトラックは休止中です。
 
-素のgreedyはend-to-end逆伝播に約5pt負けます(88.2% vs 93.6%)が、代わりに離散化ギャップが構造的にゼロ・学習メモリが深さ分の1・深さの自動決定という利点があります。
+**同じ単発500の土俵で、逆伝播(e2e)と比べると:** 素のgreedyは出発点では逆伝播に負けます(digits 88.2 vs 93.6、MNIST 74.3 vs 81.8)。でもレバーを入れると逆転し、データが大きいほど差が開きます — **digits +2.8pt(96.4 vs 93.6)、MNIST +12.5pt(94.3 vs 81.8)**。理由は深さ: 逆伝播は勾配消失で深さ6あたりが頭打ち(単発500のe2eは81.8%@6でピーク→以降崩壊)、greedyは層またぎの勾配が無いので27〜40層まで深さを使える。加えて離散化ギャップが構造的にゼロ・学習メモリが1層分、という利点もあります。
 
 **実験一覧(本線=固定予算のアイデア勝負)** — 詳細は各リンク先:
 

@@ -31,6 +31,18 @@ exchange you get zero discretization gap, ~1/depth training memory, automatic de
 and a circuit you can simplify incrementally. (See the windowed-lookahead section below
 for how much of that 5 pt turned out to be myopia rather than anything fundamental.)
 
+**MNIST baseline — same budget, and the story flips.** The digits table above uses one
+depth (4) because that is where plain greedy peaks. On MNIST the honest e2e reference is
+its *best* over depths, since e2e can't use much depth: a single 500-gate/layer e2e net
+peaks at **81.76% @ depth 6** and then collapses (80.6 @4, 81.8 @6, 77.7 @8, 71.7 @10 —
+vanishing gradients, `--e2e-depth` sweep, seed 1, `--batch 512`). Plain greedy on MNIST
+is 74.3% — so at the plain starting line e2e wins by ~7 pt. But the residual lever lifts
+greedy to 90.9% and the full champion to **94.3%**, while e2e is stuck at 81.8% because
+it cannot go deep. Net: on the same single-500 budget, **backprop-free greedy beats
+end-to-end backprop by +12.5 pt on MNIST** (94.3 vs 81.8), up from +2.8 pt on digits
+(96.4 vs 93.6). The mechanism is the depth-stress result below — e2e's gradients vanish
+past ~6–8 layers; greedy has no cross-layer gradient to vanish.
+
 Also observed: **duplicate-gate merging found 0 duplicates** — with fixed random
 wiring, two gates almost never share both inputs. The real simplification wins are
 pass-through and dead-gate removal (34% of gates here). If you came for De Morgan-style
