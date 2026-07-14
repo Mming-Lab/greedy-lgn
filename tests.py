@@ -58,6 +58,14 @@ CASES = [
     ("seq row-sequential + warm-start",
      "--gates 200 --epochs 30 --max-layers 4 --seq --warm-start 3 --skip-e2e",
      {"greedy_hard_test_acc": 0.5956, "greedy_depth": 4}),
+    # 2026-07-14 追加: convの初のピン(メモリ最適化=uint8プール+チャンネル
+    # チャンクの導入時にmainで採取)。digitsはCc>=Cの1チャンク経路=従来と
+    # ビット等価であることをピンで保証する(マルチチャンクのlogits勾配は
+    # 縮約順序の丸めが変わりうるため対象外 — conv.py forwardのコメント参照)
+    ("conv C64/tree3 + residual",
+     "--conv 64 --conv-tree 3 --epochs 60 --max-layers 3 --group-residual"
+     " --skip-e2e",
+     {"greedy_hard_test_acc": 0.6422, "greedy_depth": 3}),
 ]
 
 

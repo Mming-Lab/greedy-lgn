@@ -19,7 +19,14 @@ class GroupSum:
     def __init__(self, Xtr, Xte, ytr, yte, cfg):
         self.cfg, self.ytr, self.yte = cfg, ytr, yte
         self.X, self.Xte = Xtr, Xte              # 配線プールの基底(skip用)
-        self.pool_tr, self.pool_te = Xtr, Xte
+        # プールはハードな0/1ビットなのでuint8で常駐(float32比1/4。MNIST 8000
+        # ゲートの常駐プール2.5GB→0.6GBでissue #9のOOMを解消)。0/1のuint8⇄float
+        # 往復は厳密に可逆で、学習・hard評価はミニバッチ/チャンク単位でfloatへ
+        # 戻すので下流は同一のfloat値を受け取る=ビット等価。
+        # X_u8/Xte_u8 はskip時のプール構築用(self.X/Xteはwindow>1のloss内で
+        # softなfloat出力とcatするためfloatのまま残す)
+        self.X_u8, self.Xte_u8 = Xtr.to(torch.uint8), Xte.to(torch.uint8)
+        self.pool_tr, self.pool_te = self.X_u8, self.Xte_u8
         self.tau = float(np.sqrt(cfg.gates / cfg.n_class))
         # --group-residual: 凍結層のクラススコアを累積し、各層は「前層までの累積
         # 予測」を固定オフセットに残差を埋めるよう学習(ブースティング)。累積は
@@ -103,7 +110,8 @@ class GroupSum:
         cfg = self.cfg
         opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
         def loss(idx):
-            pool = self.pool_tr if idx is None else self.pool_tr[idx]
+            # uint8常駐プールをこのバッチ分だけfloatへ(0/1なので厳密・ビット等価)
+            pool = (self.pool_tr if idx is None else self.pool_tr[idx]).float()
             X = self.X if idx is None else self.X[idx]
             y = self.ytr if idx is None else self.ytr[idx]
             # residual: 凍結prefixの累積accumを引き継ぎ、窓内の各層の寄与を足して
@@ -160,8 +168,9 @@ class GroupSum:
             s_tr, s_te = self.accum_tr, self.accum_te
         a_te = accuracy(s_te, self.yte)
         a_tr = accuracy(s_tr, self.ytr)
-        self.pool_tr = next_pool(h_tr, self.X, self.pool_tr, cfg)
-        self.pool_te = next_pool(h_te, self.Xte, self.pool_te, cfg)
+        # プールはuint8で前進(hardビットは厳密に0.0/1.0なので変換は可逆)
+        self.pool_tr = next_pool(h_tr.to(torch.uint8), self.X_u8, self.pool_tr, cfg)
+        self.pool_te = next_pool(h_te.to(torch.uint8), self.Xte_u8, self.pool_te, cfg)
         # --local: プール位置も同じ規則で前進(no-skip=ゲート位置のみ、
         # skip-input=[入力位置 || ゲート位置])
         if getattr(cfg, "local", 0) > 0:

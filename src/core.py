@@ -154,8 +154,10 @@ def next_pool(h, X, pool_prev, cfg):
 @torch.no_grad()
 def hard_batched(layer, x, budget=8192 * 500):  # bound the [B, G, 16] temporary
     chunk = max(1024, budget // layer.ia.numel())  # 500 gates -> 8192 rows (as before)
-    return layer.hard(x) if len(x) <= chunk else torch.cat(
-        [layer.hard(c) for c in x.split(chunk)])
+    # x はuint8プール(常駐メモリ削減、issue #9)でも可: チャンク単位でfloatへ
+    # 戻して評価する。float32入力では .float() は無コピーの恒等なので従来と同一
+    return layer.hard(x.float()) if len(x) <= chunk else torch.cat(
+        [layer.hard(c.float()) for c in x.split(chunk)])
 
 def reps(pool_w, cfg):
     """--recur: この層を何回反復適用するか。重み共有の再帰は配線次元が
