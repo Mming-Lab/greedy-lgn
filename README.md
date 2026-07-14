@@ -47,12 +47,17 @@ input bits ──► [train layer 1 (soft, local GroupSum loss)]
 
 Everything on the main track runs at a **fixed budget — 500 gates/layer, single network** — because the game here is watching which *ideas* move the accuracy points, not how much compute gets spent. Greedy (this repo, no cross-layer backprop) vs end-to-end backprop at that same budget, hard-circuit test accuracy on both datasets:
 
-| 500 gates/layer, single net | greedy (this repo) | end-to-end backprop |
+Hard-circuit test accuracy, 500 gates/layer, single net:
+
+| dataset | plain greedy | greedy, best lever | end-to-end backprop |
+|---|---|---|---|
+| **digits** (8×8) | 88.2% | **96.4%** (residual) | 93.6% |
+| **MNIST** (28×28) | 74.3% | **94.3%** (residual+skip+low-plane) | 81.8% (peaks @depth 6) |
+
+Why backprop can't be pushed further — and greedy can:
+
+| property | greedy (this repo) | end-to-end backprop |
 |---|---|---|
-| **digits** (8×8), plain greedy | 88.2% (depth 4) | **93.6%** (depth 4) |
-| **digits**, best lever (residual) | **96.4%** | 93.6% |
-| **MNIST** (28×28), plain greedy | 74.3% | **81.8%** (best; peaks @depth 6) |
-| **MNIST**, best lever (residual+skip+low-plane) | **94.3%** | 81.8% |
 | discretization gap | **0 (by construction)** | present, grows with depth (+0.3→1.3 pt) |
 | usable depth | 40+ (residual productive to 27–40) | **collapses past ~6–8** (vanishing gradients) |
 | float logits during training | **one layer** (500×16) | whole net (depth × 500×16) |

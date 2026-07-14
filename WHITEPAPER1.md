@@ -31,12 +31,17 @@ Every experiment on the main track runs at a **fixed budget — 500 gates per la
 
 Greedy (no cross-layer backprop) vs end-to-end backprop, same single-500 budget:
 
-| 500 gates/layer, single net | greedy (this repo) | end-to-end backprop |
+Hard-circuit test accuracy, 500 gates/layer, single net:
+
+| dataset | plain greedy | greedy, best lever | end-to-end backprop |
+|---|---|---|---|
+| digits | 88.2% | **96.4%** (residual) | 93.6% |
+| MNIST | 74.3% | **94.3%** (residual+skip+low-plane) | 81.8% (peaks @depth 6) |
+
+Why backprop can't be pushed further — and greedy can:
+
+| property | greedy (this repo) | end-to-end backprop |
 |---|---|---|
-| digits, plain greedy | 88.2% | **93.6%** |
-| digits, best lever (residual) | **96.4%** | 93.6% |
-| MNIST, plain greedy | 74.3% | **81.8%** (best; peaks @depth 6) |
-| MNIST, best lever (residual+skip+low-plane) | **94.3%** | 81.8% |
 | discretization gap | **0 (by construction)** | present, grows with depth |
 | usable depth | 40+ (residual: 27–40) | **collapses past ~6–8** |
 
