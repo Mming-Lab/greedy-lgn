@@ -57,6 +57,9 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
 - src/groupsum.py  : GroupSum目的(主線)。residual/boost/warm-start/localはモード
 - src/ff.py        : Forward-Forward目的(負例マイニング・構造化配線含む)
 - src/greedy.py    : 手法本体(run_greedy + make_objective)
+- src/checkpoint.py: 凍結層の保存・復元(--checkpoint/--stop-file、2026-07-15、
+                     タスク29)。groupsum(dense)専用、ff/seq/conv/ensemble/carryとは
+                     experiment.py側のp.errorで排他
 - src/scaling.py   : オフトラックのスケーリングレバー(アンサンブル投票)
 - src/e2e.py       : 逆伝播ベースライン
 - src/simplify.py  : 論理簡略化+ビット等価検証(残差の全層読み出しにも対応)
@@ -131,7 +134,16 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
     **看板93.72に伸びしろの可能性**。(c)低側面seed2は上限40で登坂中のまま
     打ち切り(94.60)。
     残る審判: MNIST champ 3シード --max-layers 80 --patience 10(1本80-100分
-    見込み、一晩バッチ向き)。留保: probe=テスト集合なので深く探すほど深さ選択の
+    見込み、一晩バッチ向き)。
+    **実測は見込み外れ(2026-07-15)**: 実際は約370秒/層でmax-layers 80なら
+    最大約8時間/シード・3シード直列で約25時間、「一晩」の想定を超える。
+    対策として--checkpoint/--stop-file(src/checkpoint.py)を実装: 凍結層は
+    再学習不要という構造(prefix性質)を活かし、層を確定するたびに(ia,ib,logits)
+    を保存(アトミック書き込み)、既存ファイルがあれば同じ設定(fingerprint照合)
+    でのみ再開できる。commitはRNG不使用の純関数なので保存済み層の「再生」で
+    内部状態(pool/accum等)・best_acc等がすべて中断なし実行とビット単位一致に
+    復元される(tests.py --only checkpointで回帰確認)。これでMNIST一晩バッチを
+    複数セッションに分割可能。groupsum(dense)・単一ネット・no-carryのみ対応留保: probe=テスト集合なので深く探すほど深さ選択の
     テストバイアスが増える(MNIST 1万サンプルで帯は狭いが、厳密にはval分割 —
     プロトコル変更なので別議論)。発展: 凍結回路の保存・再開(配線+fnを保存して
     続きの深さから延長、層RNGは(seed,深さ)のみ依存なのでビット等価に再開可能)

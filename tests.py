@@ -11,7 +11,7 @@ Usage:
     python tests.py --device cuda  # GPU, ~2 min (numbers are identical to CPU)
     python tests.py --only ff      # substring filter on case names
 """
-import argparse, json, subprocess, sys, time
+import argparse, json, os, subprocess, sys, tempfile, time
 
 # (name, experiment.py args, expected summary fields)
 # 期待値はすべて実測でピン留めした公開値。seed 1 / digits。
@@ -69,20 +69,54 @@ CASES = [
 ]
 
 
-def run_case(name, args, expect, device):
+def _run(args, device):
+    """experiment.pyを1回サブプロセス起動してsummary dictを返す((summary, dt, err)、
+    失敗時はsummary=None+errに詳細)。run_caseとrun_checkpoint_caseの共通土台"""
     cmd = [sys.executable, "experiment.py"] + args.split() + ["--device", device]
     t0 = time.time()
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     dt = time.time() - t0
     if out.returncode != 0:
-        return False, dt, f"exit {out.returncode}\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}"
+        return None, dt, f"exit {out.returncode}\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}"
     try:
         summary = json.loads(out.stdout.split("=== summary ===", 1)[1])
     except (IndexError, json.JSONDecodeError) as e:
-        return False, dt, f"summary parse failed: {e}\n{out.stdout[-2000:]}"
+        return None, dt, f"summary parse failed: {e}\n{out.stdout[-2000:]}"
+    return summary, dt, None
+
+
+def run_case(name, args, expect, device):
+    summary, dt, err = _run(args, device)
+    if summary is None:
+        return False, dt, err
     bad = [f"  {k}: expected {v!r}, got {summary.get(k)!r}"
            for k, v in expect.items() if summary.get(k) != v]
     return (not bad), dt, "\n".join(bad)
+
+
+def run_checkpoint_case(device):
+    """--checkpointの往復(分割実行)がノンストップ実行とビット単位で一致するか。
+    層を確定するたびにtorch.saveし、再開時にfingerprintを照合して復元する
+    本番コードパスをそのまま通す(タスク29のMNIST一晩バッチ分割を支える機能)。
+    max-layers 3で一度止め、同じ--checkpointパスでmax-layers 6を再実行して
+    最終summaryがノンストップ実行と厳密一致することを見る"""
+    base = ("--gates 200 --epochs 30 --group-residual --skip-input"
+            " --skip-e2e --seed 1")
+    t0 = time.time()
+    full, _, err1 = _run(f"{base} --max-layers 6", device)
+    if full is None:
+        return False, time.time() - t0, f"baseline run failed:\n{err1}"
+    with tempfile.TemporaryDirectory() as d:
+        ck = os.path.join(d, "ck.pt")
+        part1, _, err2 = _run(f"{base} --max-layers 3 --checkpoint {ck}", device)
+        if part1 is None:
+            return False, time.time() - t0, f"part1 run failed:\n{err2}"
+        part2, _, err3 = _run(f"{base} --max-layers 6 --checkpoint {ck}", device)
+        if part2 is None:
+            return False, time.time() - t0, f"part2 (resume) run failed:\n{err3}"
+    bad = [f"  {k}: baseline {full.get(k)!r} != resumed {part2.get(k)!r}"
+           for k in full if full.get(k) != part2.get(k)]
+    return (not bad), time.time() - t0, "\n".join(bad)
 
 
 def main():
@@ -98,7 +132,15 @@ def main():
         if not ok:
             print(detail)
             failed += 1
-    print(f"\n{len(cases) - failed}/{len(cases)} passed")
+    total = len(cases)
+    if a.only == "" or "checkpoint" in a.only:
+        total += 1
+        ok, dt, detail = run_checkpoint_case(a.device)
+        print(f"[{'PASS' if ok else 'FAIL'}] checkpoint resume == non-stop  ({dt:.0f}s)")
+        if not ok:
+            print(detail)
+            failed += 1
+    print(f"\n{total - failed}/{total} passed")
     sys.exit(1 if failed else 0)
 
 

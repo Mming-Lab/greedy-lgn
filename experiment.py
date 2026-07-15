@@ -17,6 +17,7 @@ Usage:
     python experiment.py --objective ff          # Forward-Forward local objective
     python experiment.py --objective ff --ff-struct 0.5 --ff-label-rep 1   # structured data x label wiring
     python experiment.py --dataset mnist --device cuda --batch 4096 --epochs 30   # MNIST
+    python experiment.py --checkpoint run.pt --max-layers 80   # resume from run.pt if it exists
 
 
 Regression: any change to these modules must keep every number in tests.py
@@ -72,6 +73,18 @@ def main():
                    help="consecutive sub-threshold checks required to stop a layer")
     p.add_argument("--max-layers", type=int, default=8)
     p.add_argument("--patience", type=int, default=2)
+    p.add_argument("--checkpoint", default=None, metavar="PATH",
+                   help="save committed (discretized+frozen) layers to PATH after"
+                        " every commit; if PATH already exists at startup, resume"
+                        " from it instead of starting over. Lets a long run be"
+                        " split across sessions and survive a power loss (at most"
+                        " the in-progress layer is lost). groupsum (dense) objective,"
+                        " single network, no --carry only.")
+    p.add_argument("--stop-file", default=None, metavar="PATH",
+                   help="if PATH exists, stop cleanly after the layer currently"
+                        " in progress finishes committing (checked once per window"
+                        " slide) -- a way to end an unattended run without killing"
+                        " the process. Combine with --checkpoint to resume later.")
     p.add_argument("--lr", type=float, default=0.05)
     p.add_argument("--e2e-max-epochs", type=int, default=300)
     p.add_argument("--seed", type=int, default=1)
@@ -263,6 +276,12 @@ def main():
                          or cfg.warm_start > 0):
         p.error("--conv is groupsum + window=1 + no-skip only (no recur/seq/"
                 "local/warm-start combination yet)")
+    if cfg.checkpoint and (cfg.objective != "groupsum" or cfg.seq or cfg.conv
+                           or cfg.carry or cfg.ensemble > 1):
+        p.error("--checkpoint is groupsum (dense), single-network, no-carry only"
+                " for now (ConvLogicLayer/FF/seq state isn't reconstructable yet,"
+                " ensemble needs a per-member path, carry needs its uncommitted"
+                " lookahead layers persisted too)")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 
