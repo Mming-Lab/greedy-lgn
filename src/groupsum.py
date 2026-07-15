@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from core import (LogicLayer, group_sum, group_mean, accuracy, next_pool,
-                  hard_batched, hard_pass, fit, make_stop_check, reps)
+                  hard_batched, hard_pass, fit, make_stop_check, reps, img_shape)
 
 # ----------------------------- local objectives -----------------------------
 # greedyループ(run_greedy)は目的関数に依存しない骨格で、各objectiveが
@@ -37,7 +37,7 @@ class GroupSum:
         # --local: 位置の帳簿。入力ビットの画素位置は plane*npix+pixel → idx%npix。
         # プール前進とともに更新する(層出力の位置=そのゲートの割当位置)
         if getattr(cfg, "local", 0) > 0:
-            self._w, self._npix = (8, 64) if cfg.dataset == "digits" else (28, 784)
+            self._w, self._npix = img_shape(cfg.dataset)
             self.pos_input = [i % self._npix for i in range(Xtr.shape[1])]
             self.pos_pool = list(self.pos_input)
             self._pending_pos = None

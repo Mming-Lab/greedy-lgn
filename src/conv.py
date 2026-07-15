@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
-from core import group_sum, accuracy, fit, make_stop_check
+from core import group_sum, accuracy, fit, make_stop_check, img_shape
 
 # 16ゲートは全て {1, a, b, ab} の線形結合: gate_k = M[k]·[1,a,b,ab]。
 # softmax重みをこの基底に畳む(16→4)ことで [.,16] スタックを作らずに
@@ -120,7 +120,7 @@ class ConvGroupSum:
     def __init__(self, Xtr, Xte, ytr, yte, cfg):
         self.cfg, self.ytr, self.yte = cfg, ytr, yte
         self.X, self.Xte = Xtr, Xte      # run_greedyのskip分岐用(convはno-skip限定)
-        w, npix = (8, 64) if cfg.dataset == "digits" else (28, 784)
+        w, npix = img_shape(cfg.dataset)
         self.shape = (Xtr.shape[1] // npix, w, w)           # (Cin=面数, H, W)
         # プールはハード0/1ビットなのでuint8常駐(groupsum.pyと同じOOM対策。
         # 学習・hard評価の直前にバッチ/チャンク単位でfloatへ=ビット等価)

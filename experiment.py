@@ -172,9 +172,13 @@ def main():
                    help="train ENSEMBLE independent greedy networks (seeds seed.."
                         "seed+M-1) side by side and report soft-vote / majority-vote"
                         " accuracy (1 = single network, the original behaviour)")
-    p.add_argument("--dataset", choices=["digits", "mnist"], default="digits",
+    p.add_argument("--dataset", choices=["digits", "mnist", "cifar10"],
+                   default="digits",
                    help="digits: sklearn 8x8 (CPU-friendly). mnist: 28x28, 70k"
-                        " samples (GPU + --batch recommended)")
+                        " samples (GPU + --batch recommended). cifar10: 32x32x3,"
+                        " 60k samples, per-channel thermometer -> 9 input planes"
+                        " (GPU + --batch; first run downloads ~170MB from"
+                        " cs.toronto.edu, md5-verified)")
     p.add_argument("--conv", type=int, default=0, metavar="C",
                    help="convolutional logic layers, phase 2 (weight-shared"
                         " kernels + OR-pooling, after conv-DLGN Petersen et al."
@@ -211,7 +215,8 @@ def main():
                         " thermometer thresholds, \"q4\" = 4 planes at evenly"
                         " spaced quantiles of the nonzero TRAIN pixels (also the"
                         " way to add planes). Default: the original fixed"
-                        " (3,7,11) digits / (63,127,191) mnist, bit-identical.")
+                        " (3,7,11) digits / (63,127,191) mnist+cifar10 (per"
+                        " channel), bit-identical.")
     p.add_argument("--batch", type=int, default=0,
                    help="minibatch size (0 = full batch, the original behaviour;"
                         " required in practice for mnist on a 6 GB GPU)")

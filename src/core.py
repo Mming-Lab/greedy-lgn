@@ -79,6 +79,14 @@ class LogicLayer(nn.Module):
             -1, sel.view(1, -1, 1).expand(x.shape[0], -1, 1)).squeeze(-1)
 
 # ----------------------------- data -----------------------------
+# データセットの空間形状 (辺の長さw, 1面の画素数npix)。面メジャー平坦ビット列の
+# 解釈に使う(--local/--conv/--seq)。面数は各所で入力幅//npixから動的に導出する
+# ので、二値化の面数(閾値数×チャンネル数)が変わってもここは不変
+IMG_SHAPE = {"digits": (8, 64), "mnist": (28, 784), "cifar10": (32, 1024)}
+
+def img_shape(dataset):
+    return IMG_SHAPE[dataset]
+
 def _parse_thresholds(spec, Xtrain_raw):
     """--thresholds の解釈。"5,10,15"=絶対閾値 / "q4"=train非ゼロ画素の等間隔
     分位点でK面(閾値増にも対応)。分位点はtrainのみから計算(テストリーク防止)"""
@@ -91,19 +99,55 @@ def _parse_thresholds(spec, Xtrain_raw):
         ths = sorted(float(t) for t in spec.split(","))
     return ths
 
+def _load_cifar10():
+    """CIFAR-10の生画素とラベル(X: [60000,3072] float32, y: [60000] int64)。
+    行順は train 50000 → test 10000、画素はチャンネルメジャー(R1024,G1024,B1024)・
+    値0..255。OpenMLのCIFAR_10はmd5不一致で取得不能(2026-07-15実測、サーバ側の
+    ファイルがメタデータと食い違う)ため、公式配布(cs.toronto.edu)のpython版
+    tar.gzを ~/scikit_learn_data にキャッシュして読む(md5検証あり・依存追加なし)"""
+    import hashlib, os, pickle, tarfile, urllib.request
+    home = os.path.join(os.path.expanduser("~"), "scikit_learn_data")
+    os.makedirs(home, exist_ok=True)
+    tgz = os.path.join(home, "cifar-10-python.tar.gz")
+    md5_ok = "c58f30108f718f92721af3b95e74349a"          # 公式ページ記載のmd5
+    if not os.path.exists(tgz) or (
+            hashlib.md5(open(tgz, "rb").read()).hexdigest() != md5_ok):
+        urllib.request.urlretrieve(
+            "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz", tgz)
+        got = hashlib.md5(open(tgz, "rb").read()).hexdigest()
+        assert got == md5_ok, f"cifar-10-python.tar.gz md5 mismatch: {got}"
+    Xs, ys = [], []
+    with tarfile.open(tgz, "r:gz") as tar:
+        for name in ([f"cifar-10-batches-py/data_batch_{i}" for i in range(1, 6)]
+                     + ["cifar-10-batches-py/test_batch"]):
+            d = pickle.load(tar.extractfile(name), encoding="bytes")
+            Xs.append(d[b"data"])                        # [10000, 3072] uint8
+            ys.append(np.asarray(d[b"labels"], dtype=np.int64))
+    return np.concatenate(Xs).astype(np.float32), np.concatenate(ys)
+
 def load_data(dataset="digits", seed=0, thresholds=None):
-    """thresholds=None は従来の固定サーモメータ(digits 3/7/11, mnist 63/127/191)
-    とビット等価。指定時のみ新しい二値化パスを通る(タスク23: 入力二値化改善)"""
-    if dataset == "mnist":
-        from sklearn.datasets import fetch_openml
-        X, y = fetch_openml("mnist_784", version=1, return_X_y=True,
-                            as_frame=False, parser="liac-arff")  # no pandas needed
-        y = y.astype(np.int64)                   # 28x28 pixels, values 0..255
+    """thresholds=None は従来の固定サーモメータ(digits 3/7/11, mnist/cifar10
+    63/127/191)とビット等価。指定時のみ新しい二値化パスを通る(タスク23)。
+    cifar10の二値化は「決めて凍結」の既定(入力符号化は土俵外 — 探索しない)"""
+    if dataset in ("mnist", "cifar10"):
+        if dataset == "mnist":
+            from sklearn.datasets import fetch_openml
+            X, y = fetch_openml("mnist_784", version=1, return_X_y=True,
+                                as_frame=False, parser="liac-arff")  # no pandas needed
+            y = y.astype(np.int64)
+            n_tr = 60000
+        else:
+            X, y = _load_cifar10()
+            n_tr = 50000
+        # mnist: 28x28 gray / cifar10: 32x32x3 チャンネルメジャー(R1024,G1024,B1024)、
+        # 値はどちらも0..255。(X>t)は列ごとなのでCIFARでは自然にチャンネル別の
+        # サーモメータになり、閾値1つにつき3面(R,G,B)×len(ths)の面メジャー連結
+        # (各1024ビット塊が1つの空間面 → conv/seq/localのCin導出とそのまま整合)
         ths = ((63, 127, 191) if thresholds is None
-               else _parse_thresholds(thresholds, X[:60000]))
+               else _parse_thresholds(thresholds, X[:n_tr]))
         Xb = np.concatenate([(X > t).astype(np.float32) for t in ths], axis=1)
-        return (torch.tensor(Xb[:60000]), torch.tensor(Xb[60000:]),   # standard split
-                torch.tensor(y[:60000]), torch.tensor(y[60000:]))
+        return (torch.tensor(Xb[:n_tr]), torch.tensor(Xb[n_tr:]),   # standard split
+                torch.tensor(y[:n_tr]), torch.tensor(y[n_tr:]))
     X, y = load_digits(return_X_y=True)          # 8x8 digits, values 0..16
     if thresholds is None:                       # 従来パス(ビット等価)
         Xb = np.concatenate([(X > t).astype(np.float32) for t in (3, 7, 11)], axis=1)

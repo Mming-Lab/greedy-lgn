@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from core import (GATE_A, LogicLayer, group_sum, accuracy, hard_batched, fit,
-                  make_stop_check)
+                  make_stop_check, img_shape)
 
 
 class SeqGroupSum:
@@ -24,7 +24,7 @@ class SeqGroupSum:
         # thermometer連結 [(X>t1),(X>t2),...] から行tのビット列を取り出す添字:
         # 各閾値ブロック内で t*w..t*w+w の画素 → 1行 = 面数*w ビット
         # (面数は入力幅から動的に導出 — --thresholds で面数が変わっても追従)
-        w, npix = (8, 64) if cfg.dataset == "digits" else (28, 784)
+        w, npix = img_shape(cfg.dataset)
         planes = Xtr.shape[1] // npix
         self.T = npix // w
         self.row_idx = [torch.tensor([k * npix + t * w + i
