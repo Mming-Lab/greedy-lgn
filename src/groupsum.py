@@ -118,6 +118,7 @@ class GroupSum:
             # いく(boostingをwindowに拡張=①+②の土台)。非residualはrun=None
             run = (None if not cfg.group_residual else
                    self.accum_tr if idx is None else self.accum_tr[idx])
+            cnt = d0   # ffres: runに寄与している層数(中心化の基準値×cnt を引く)
             # --group-boost: 凍結累積(=run初期値)が誤答のサンプルのCEをB倍に
             # 傾斜(AdaBoost式のサンプル再重み付け)。採点者は凍結prefixのみ
             # (窓内の未凍結寄与を含めない)。layers空(最初の層)は累積ゼロで
@@ -133,6 +134,24 @@ class GroupSum:
                                                   F.one_hot(y, cfg.n_class).float())
                 logits = run if cfg.group_residual else group_sum(h, cfg.n_class,
                                                                   self.tau)
+                if cfg.group_loss == "ffres":
+                    # FF-Residual(タスク21): 累積クラススコアを層数×基準値で中心化
+                    # し、クラス次元ごとに独立のロジスティック評価(正解次元は上げ・
+                    # 不正解次元は下げる。softmaxのシェア争い無し)。ラベル埋め込みは
+                    # 使わない — greedyでは学習中の層が常に事実上の最終層なので、
+                    # FFの絶対評価の命令はクラススコアへの直接評価で1パス成立する。
+                    # 累積が既に十分なサンプルはsoftplusの飽和で勾配が消える=残差の
+                    # 思想。基準値=ランダム層の期待クラス和(ゲートの半分が発火)。
+                    # argmaxは一様シフトに無関係なのでcommit/プローブは生の累積のまま
+                    base = (cfg.gates / cfg.n_class) / 2.0 / self.tau
+                    z = logits - base * (cnt if cfg.group_residual else 1)
+                    idx_y = y.view(-1, 1)
+                    sp = F.softplus(z)
+                    per = (F.softplus(-z.gather(1, idx_y).squeeze(1))
+                           + (sp.sum(1) - sp.gather(1, idx_y).squeeze(1))
+                             / (cfg.n_class - 1))   # 負例9次元は平均(9:1の支配を防ぐ)
+                    return (per.mean() if wvec is None
+                            else (per * wvec).sum() / wvec.sum())
                 if wvec is None:
                     return F.cross_entropy(logits, y)
                 ce = F.cross_entropy(logits, y, reduction="none")
@@ -147,6 +166,7 @@ class GroupSum:
                 if cfg.group_residual:
                     g = group_sum(h, cfg.n_class, self.tau)
                     run = g if run is None else run + g
+                    cnt += 1
                 if cfg.win_loss == "all":
                     terms.append(term(h))
                 pool = next_pool(h, X, pool, cfg)

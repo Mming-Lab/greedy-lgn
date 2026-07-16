@@ -114,10 +114,13 @@ def main():
                    help="window training loss: CE at the last window layer only"
                         " (pure lookahead) or averaged over all window layers"
                         " (deep supervision). groupsum only; ff always uses all")
-    p.add_argument("--group-loss", choices=["ce", "bce"], default="ce",
+    p.add_argument("--group-loss", choices=["ce", "bce", "ffres"], default="ce",
                    help="groupsum local loss: ce (cross-entropy on the scaled group"
-                        " sums, original) or bce (per-class BCE: correct class's bit"
-                        " group -> 1, others -> 0, on group means in [0,1])")
+                        " sums, original), bce (per-class BCE: correct class's bit"
+                        " group -> 1, others -> 0, on group means in [0,1]), or"
+                        " ffres (FF-style per-class independent logistic loss on the"
+                        " depth-centred class scores: raise the true class, lower"
+                        " the 9 others, no softmax -- see --objective ff-residual)")
     p.add_argument("--group-residual", action="store_true",
                    help="boosting readout: each layer's class scores are added to the"
                         " frozen layers' accumulated prediction (each layer learns to"
@@ -147,11 +150,16 @@ def main():
                         " (gate-A passthrough, logit biased by B toward A) instead of"
                         " random, then learns the residual from there (ResNet-style"
                         " identity block). 0 = off, random init. groupsum only.")
-    p.add_argument("--objective", choices=["groupsum", "ff"], default="groupsum",
-                   help="per-layer local objective: groupsum (GroupSum+CE, original)"
-                        " or ff (Forward-Forward goodness = popcount on binary"
+    p.add_argument("--objective", choices=["groupsum", "ff", "ff-residual"],
+                   default="groupsum",
+                   help="per-layer local objective: groupsum (GroupSum+CE, original),"
+                        " ff (Forward-Forward goodness = popcount on binary"
                         " layers; labels are overlaid on the input, inference tries"
-                        " all 10 labels)")
+                        " all 10 labels), or ff-residual (one-pass FF on the residual"
+                        " readout: pure image input, each layer's class scores"
+                        " accumulate and the FF raise/lower instruction is applied"
+                        " per class dimension -- shorthand for --group-residual"
+                        " --group-loss ffres)")
     p.add_argument("--ff-neg", choices=["random", "hard", "mix", "review"],
                    default="random",
                    help="negative-label policy for ff: random wrong label (original),"
@@ -234,12 +242,19 @@ def main():
                    help="minibatch size (0 = full batch, the original behaviour;"
                         " required in practice for mnist on a 6 GB GPU)")
     cfg = p.parse_args()
+    # ff-residual = groupsum残差+クラス独立ロジスティック損失の別名(タスク21)。
+    # ラベル埋め込み無しの1パスFF。正規化後は既存のgroupsum系バリデーション・
+    # checkpoint許可・simplifyパスがそのまま適用される
+    if cfg.objective == "ff-residual":
+        cfg.objective, cfg.group_residual, cfg.group_loss = ("groupsum", True,
+                                                             "ffres")
     if not (1 <= cfg.commit <= cfg.window):
         p.error("--commit must satisfy 1 <= commit <= window")
     if cfg.carry and (cfg.skip_input or cfg.skip_all):
         p.error("--carry is no-skip only (carried layers assume constant in_dim)")
-    if cfg.group_residual and (cfg.objective != "groupsum" or cfg.group_loss != "ce"):
-        p.error("--group-residual needs groupsum objective and ce loss")
+    if cfg.group_residual and (cfg.objective != "groupsum"
+                               or cfg.group_loss not in ("ce", "ffres")):
+        p.error("--group-residual needs groupsum objective and ce/ffres loss")
     if cfg.group_boost != 1.0 and not cfg.group_residual:
         p.error("--group-boost needs --group-residual")
     if cfg.warm_start > 0 and cfg.objective != "groupsum":
