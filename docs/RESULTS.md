@@ -406,7 +406,11 @@ band; the reported peak is 94.91%). A clean fix needs a validation split — a
 protocol change, not attempted here. (2) seed 2 was still climbing when it hit
 the depth-80 cap, so there is more left on the table.
 
-Full run log: [issue #14](https://github.com/Mming-Lab/greedy-lgn/issues/14).
+Full run log: [issue #14](https://github.com/Mming-Lab/greedy-lgn/issues/14). The three
+frozen circuits are published as release assets
+([`task29-checkpoints`](https://github.com/Mming-Lab/greedy-lgn/releases/tag/task29-checkpoints)) —
+rebuild them with `--checkpoint` or `tools/vote_checkpoints.py` to re-verify these
+numbers, or to extend seed 2 past the cap, without repeating the 8–11 h per seed.
 
 ## Depth curve: it fits a saturating law, but that does not buy cheap early stopping (negative)
 

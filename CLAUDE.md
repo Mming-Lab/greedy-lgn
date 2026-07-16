@@ -61,6 +61,8 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
 - src/ff.py        : Forward-Forward目的(負例マイニング・構造化配線含む)
 - src/greedy.py    : 手法本体(run_greedy + make_objective)
 - src/checkpoint.py: 凍結層の保存・復元(--checkpoint/--stop-file、2026-07-15、
+                     weights_only=Trueで安全読み込み。看板3シードの.ptは
+                     Release task29-checkpoints で公開済み(再学習8-11時間/本が不要)。
                      タスク29)。groupsum(dense)専用、ff/seq/conv/ensemble/carryとは
                      experiment.py側のp.errorで排他
 - src/scaling.py   : オフトラックのスケーリングレバー(アンサンブル投票)
