@@ -68,6 +68,10 @@ difflogic(Petersen et al.)系の先行研究に対する位置づけ・関連論
                      16→4基底+勾配checkpoint+hardチャンク予算でMNISTが6GBに収まる)
 - tools/diagnose.py: 回路診断(触られ率・機能的冗長度・ゲート種類分布)
 - tools/dynamics.py: 学習済み再帰セルの力学系census(発振器・固定点)
+- tools/vote_checkpoints.py: 学習済み.pt(凍結回路)を読んで投票アンサンブル
+                     (追加学習ゼロ)。メンバー=(.pt, 深さ)。残差の全層累積
+                     readoutに対応(GroupSum.countsは最終層のみで残差に使えない)、
+                     整数カウント合算(issue #8の教訓)。一致率も出す(=多様性)
 - WHITEPAPER1.md: (ルート)読み物(探検記)Vol.1「94%までの軌跡」。英語本体+
                  日本語アブスト1段落。新規性非主張トーン。看板は手法単体の3シード
                  93.72%(low-plane込み94.27はタイトルの到達点だが土俵外注記扱い)
