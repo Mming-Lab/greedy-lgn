@@ -216,7 +216,7 @@ Using the three champion seeds from the depth-exploration batch (MNIST, residual
 | 3 depths of seed 2 (@70/74/78) | 97.1% | 94.96% | 94.96% | +0.00 |
 
 Two readings. **Different seeds work** — 95.61% off three runs that already existed,
-for inference only (the arena headline is the 94.53% 3-seed *mean*; this is a different
+for inference only (the arena headline is the 94.64% 3-seed *mean*; this is a different
 measurement of the same runs, and it costs 3× the circuit area, so it stays off-arena).
 **Same-seed depth snapshots do not.** With a residual readout, depth *d+k* is literally
 depth *d* plus *k* more corrections, so the "members" are nested prefixes and can't

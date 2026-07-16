@@ -37,9 +37,9 @@ its *best* over depths, since e2e can't use much depth: a single 500-gate/layer 
 peaks at **81.76% @ depth 6** and then collapses (80.6 @4, 81.8 @6, 77.7 @8, 71.7 @10 —
 vanishing gradients, `--e2e-depth` sweep, seed 1, `--batch 512`). Plain greedy on MNIST
 is 74.3% — so at the plain starting line e2e wins by ~7 pt. But the residual lever lifts
-greedy to 90.9% and the method headline (residual+skip) to **94.5%** (3-seed mean 94.53),
+greedy to 90.9% and the method headline (residual+skip) to **94.6%** (3-seed mean 94.64),
 while e2e is stuck at 81.8% because it cannot go deep. Net: on the same single-500 budget,
-**backprop-free greedy beats end-to-end backprop by +12.7 pt on MNIST** (94.5 vs 81.8),
+**backprop-free greedy beats end-to-end backprop by +12.8 pt on MNIST** (94.6 vs 81.8),
 up from +2.8 pt on digits (96.4 vs 93.6). (An off-arena preprocessing lever — a lower
 input-binarization plane — adds +0.55 pt on top for 94.27%; see the input-binarization
 section.) The mechanism is the depth-stress result below — e2e's gradients vanish
@@ -364,11 +364,11 @@ The effect is large, and it holds on the arbiter:
 | residual (no skip) | 90.86% | 9 (converges fast, shallow) |
 | residual + `--skip-input` (cap 25) | 93.12% | 24 |
 | residual + `--skip-input` (cap 40, `--patience 2`) | 93.82% (seed 1; 3-seed mean 93.72%) | 34 |
-| residual + `--skip-input` (cap 80, `--patience 10`) | **94.36%** (seed 1; 3-seed mean **94.53%** = headline) | 41 |
+| residual + `--skip-input` (`--patience 10`) | **94.36%** (seed 1; 3-seed mean **94.64%** = headline) | 41 (seed 2 goes to 95) |
 
-digits likewise: residual 96.4% → residual+skip **97.3%**. The headline is the 3-seed mean **94.53%** (verified; see the depth-exploration section below for the per-seed numbers) — a single 500-gate net with no ensemble and no width scaling, it beats the previous repo best of 90.9% (which needed 4,000-gate layers × 4 ensemble ≈ 16× the gates plus voting). Honest cost: skip's +3 pt comes with a much deeper circuit (9 → 40-80 layers = longer critical-path latency), so residual-alone (90.86% @9) is the shallow/fast champion and residual+skip (94.53%) is the max-accuracy champion — pick by whether latency or accuracy matters.
+digits likewise: residual 96.4% → residual+skip **97.3%**. The headline is the 3-seed mean **94.64%** (verified; see the depth-exploration section below for the per-seed numbers) — a single 500-gate net with no ensemble and no width scaling, it beats the previous repo best of 90.9% (which needed 4,000-gate layers × 4 ensemble ≈ 16× the gates plus voting). Honest cost: skip's +3 pt comes with a much deeper circuit (9 → 41–95 layers = longer critical-path latency), so residual-alone (90.86% @9) is the shallow/fast champion and residual+skip (94.64%) is the max-accuracy champion — pick by whether latency or accuracy matters.
 
-**Residual also revives the carry window (①+②).** Windowed lookahead was near-useless on plain greedy, and the carry-forward window (`--carry`, keeping the uncommitted lookahead layer instead of discarding it) actually *hurt* on its own (digits 90.2 vs 91.6). On top of residual, both flip positive: `--window 2 --commit 1 --win-loss all` adds +1.1 pt (MNIST 90.86 → 92.00), and adding `--carry` adds a further +0.25 pt (→ 92.25). The sign flip is the point — a carried layer's value in plain mode is its (fragile) features, which go stale when the layer below is frozen; in residual mode its value is the *answer correction* it contributes, which stays portable. So the project owner's "①+② should revive ②" was right in direction, though the gain is small and still below residual+skip (94.53%; 93.72% under the `--patience 2` rule these runs used). Residual now supports `--window`; W=1 stays bit-exact.
+**Residual also revives the carry window (①+②).** Windowed lookahead was near-useless on plain greedy, and the carry-forward window (`--carry`, keeping the uncommitted lookahead layer instead of discarding it) actually *hurt* on its own (digits 90.2 vs 91.6). On top of residual, both flip positive: `--window 2 --commit 1 --win-loss all` adds +1.1 pt (MNIST 90.86 → 92.00), and adding `--carry` adds a further +0.25 pt (→ 92.25). The sign flip is the point — a carried layer's value in plain mode is its (fragile) features, which go stale when the layer below is frozen; in residual mode its value is the *answer correction* it contributes, which stays portable. So the project owner's "①+② should revive ②" was right in direction, though the gain is small and still below residual+skip (94.64%; 93.72% under the `--patience 2` rule these runs used). Residual now supports `--window`; W=1 stays bit-exact.
 
 Full run log: [issue #11](https://github.com/Mming-Lab/greedy-lgn/issues/11).
 
@@ -385,26 +385,35 @@ searching deeper costs time and nothing else (the rollback is free). That made
 digits agreed first (3 seeds forced to depth 60, then re-scored under each rule:
 p=2 mean 96.96 → p=10 mean 97.85, +0.89 pt, 3/3 seeds). MNIST is the referee:
 
-| MNIST, residual+skip, 500 gates | `--patience 2` (old) | `--patience 10 --max-layers 80` | Δ |
-|---|---|---|---|
-| seed 1 | 93.82% @34 | **94.36% @41** | +0.54 |
-| seed 2 | 93.48% @26 | **94.91% @78** (hit the cap, still climbing) | +1.43 |
-| seed 3 | 93.87% @29 | **94.32% @43** | +0.45 |
-| **mean** | **93.72%** | **94.53%** | **+0.81 (3/3 seeds)** |
+| MNIST, residual+skip, 500 gates | `--patience 2` (old) | `--patience 10` | Δ | stopped at |
+|---|---|---|---|---|
+| seed 1 | 93.82% @34 | **94.36% @41** | +0.54 | 51 (patience) |
+| seed 2 | 93.48% @26 | **95.24% @95** | +1.76 | 105 (patience) |
+| seed 3 | 93.87% @29 | **94.32% @43** | +0.45 | 53 (patience) |
+| **mean** | **93.72%** | **94.64%** | **+0.92 (3/3 seeds)** | |
 
-**94.53% is the new method headline** (single 500-gate net, no ensemble, no
-width scaling). Every run verified bit-exact (`identical = True`). Cost: 7.6–10.7
-h per seed on a 6 GB RTX 3060 (seed 2 took 27,406 s); this only completed
-because `--checkpoint` let each run be split across sessions.
+**94.64% is the new method headline** (single 500-gate net, no ensemble, no width
+scaling). All three seeds stop on *patience*, not on the depth cap, so the
+protocol is uniform across them. Every run verified bit-exact
+(`identical = True`). Cost: 7.6–11.8 h per seed on a 6 GB RTX 3060 (seed 2 took
+27,406 + 4,082 s); this only completed because `--checkpoint` let each run be
+split across sessions. Note how wide the depth spread is — seed 2 stays productive
+to depth 95 while seeds 1 and 3 are done by ~42.
+
+(An intermediate **94.53%** was reported when the batch first ran with
+`--max-layers 80`: seed 2 hit that cap at 94.91% @78 while still climbing, so the
+mean mixed a cap-truncated seed with two patience-stopped ones. Resuming seed 2
+alone from its checkpoint with `--max-layers 120` closed that gap — 95.24% @95,
+stopping on patience at 105 — and made the protocol uniform. 94.53% is retired.)
 
 **Honest caveats.** (1) The probe is the *test* set, so searching deeper also
 draws more samples from a noisy criterion — `patience 10` picks the best of ~10
-extra depths where `patience 2` picked the best of ~2. The old headline was
-selected the same way so the comparison's direction holds, but the peak values
-are likely ~0.1–0.2 pt optimistic (seed 2's depths 70–80 sit in a 94.7–94.9%
-band; the reported peak is 94.91%). A clean fix needs a validation split — a
-protocol change, not attempted here. (2) seed 2 was still climbing when it hit
-the depth-80 cap, so there is more left on the table.
+extra depths where `patience 2` picked the best of ~2, and seed 2 drew from 105.
+The old headline was selected the same way so the comparison's direction holds,
+but the peak values are likely ~0.1–0.2 pt optimistic (seed 2's depths 90–105 sit
+in a 94.99–95.24% band; the reported peak is the top of it). A clean fix needs a
+validation split — a protocol change, not attempted here. (2) Each seed's stopping
+depth is now its own, so the headline is not a fixed-depth claim.
 
 Full run log: [issue #14](https://github.com/Mming-Lab/greedy-lgn/issues/14). The three
 frozen circuits are published as release assets
@@ -425,9 +434,28 @@ rest, stop early. The fit itself is excellent (a plain log curve is not: R² ≈
 | seed 2 (80 layers) | R² **0.9990**, asymptote 95.36% | R² 0.9972, 96.19% |
 | seed 3 (53 layers) | R² **0.9976**, asymptote 95.57% | R² 0.9940, 97.79% |
 
-The Hill form fits best and its asymptote is consistent across seeds (95.2–95.6%),
-while the power law's asymptote is not (96.2 / 96.2 / **97.8** — seed 3 is an
-outlier). So the *shape* is real and reproducible.
+The Hill form fits best in-sample, and at this point its asymptote looked like the
+trustworthy one — consistent across seeds (95.2–95.6%) where the power law's was
+not (96.2 / 96.2 / **97.8**). **That reading was wrong, and extending seed 2 proved
+it.** Resuming seed 2 to depth 105 and scoring the 80-layer fits against the new
+ground truth:
+
+| depth | actual | power (fit on 80) | Hill (fit on 80) |
+|---|---|---|---|
+| 90 | 95.15% | 94.93% | 94.72% |
+| 95 | **95.24%** | 94.98% | 94.75% |
+| 100 | 95.20% | 95.03% | 94.78% |
+| 105 | 95.13% | 95.07% | 94.81% |
+
+Against the depth-90–105 band (mean 95.11%), the power fit is off by **−0.11 pt**
+and Hill by **−0.35 pt** — *the better in-sample fit extrapolates worse*, and both
+now **under**-shoot where the early fits over-shot. Worse for Hill: its 80-layer
+asymptote said 95.36% was the ceiling at infinite depth, and the run reached 95.24%
+by depth 95 — refitting on 105 layers moves that "ceiling" up to 95.70%. The
+apparent cross-seed consistency was systematic under-estimation, not stability. The
+power law's asymptote is the steadier one (96.68 → 96.32 → 96.19 → 96.26% as layers
+40 → 60 → 80 → 105 arrive), but "steadier" is not "verified": no fit here has been
+tested beyond ~1.3× the fitted range.
 
 **But the useful version of the idea fails.** Fitting only the first N layers and
 predicting the final layer's accuracy (Hill, error in pt):
@@ -444,9 +472,13 @@ cut experiment time by ~4×. **seed 3 breaks it** (+1.9 pt at N=15, still +0.5 p
 at N=40) — larger than most of the levers in this document. Extrapolated
 asymptotes are therefore not a usable stopping oracle at 3 seeds, and the
 "calibrate on 20 layers, then decide" protocol is **not adopted**. (A cheaper
-honest reading: the early fit systematically over-estimates because it can't yet
-see how hard the curve bends; a shift parameter fixes the *average* case but not
-the variance across seeds.) The curve fit stays a *descriptive* observation.
+honest reading: the early fit can't yet see how hard the curve bends; a shift
+parameter fixes the *average* case but not the variance across seeds. Note the
+error is not even one-signed — early fits over-shoot, the 80-layer fits
+under-shoot.) The curve fit stays a *descriptive* observation, and the
+model-selection lesson generalizes past this repo: **in-sample R² ranked the two
+candidates in exactly the wrong order for extrapolation**, and only running the
+experiment further could tell.
 
 Related and worth stating: **the residual readout alone does not produce this
 curve — residual+skip does.** Forced to depth 60 on digits, residual-without-skip
@@ -505,7 +537,7 @@ question was whether *explicit* reweighting adds anything.
 digits 3-seed likewise: +0.67 pt at B=3. **Honest verdict:** a real but small
 gain (2/3 seeds win, mean +0.43 pt on MNIST), consistent with the hypothesis
 that gradient boosting already focuses on hard samples implicitly — the explicit
-reweight only doubles down. Does not touch the residual+skip champion (94.53%, 3-seed mean).
+reweight only doubles down. Does not touch the residual+skip champion (94.64%, 3-seed mean).
 
 ## FF-Residual (`--objective ff-residual`): one-pass Forward-Forward on the residual readout — negative result
 
@@ -707,7 +739,7 @@ low plane on the champion (residual + `--skip-input`, cap 40, `--patience 2`),
 each seed run side-by-side with a same-protocol control. Note both columns predate
 the depth-exploration result above, so the control here is the *old* 93.72%
 headline; whether the low plane still adds +0.55 pt on top of the deeper
-`--patience 10` champion (94.53%) has **not** been measured:
+`--patience 10` champion (94.64%) has **not** been measured:
 
 | residual + skip, MNIST | control (63,127,191) | + low plane (31,63,127,191) |
 |---|---|---|
@@ -720,7 +752,7 @@ headline; whether the low plane still adds +0.55 pt on top of the deeper
 **Against its own control the low plane adds +0.55 pt (93.72% → 94.27%, best
 single 94.60%).** But it changes the *input encoding* (a fourth threshold plane =
 more input bits), not the network or the learning, so it is credited **off the
-arena** — not as the headline. (The method headline has since moved to 94.53%
+arena** — not as the headline. (The method headline has since moved to 94.64%
 via depth exploration, which this comparison predates — see above.) Every run is verified
 end-to-end: with simplify now supporting the residual all-layer readout, each
 simplified circuit (~10.5–16k gates, 80–81% of raw) is confirmed bit-identical to
