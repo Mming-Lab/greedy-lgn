@@ -34,7 +34,11 @@ def save(path, layers, cfg):
     os.replace(tmp, path)   # Windows NTFSでもatomic rename
 
 def load(path):
-    payload = torch.load(path, weights_only=False)
+    # weights_only=True: pickleの任意コード実行を許さない安全な読み込み。
+    # payloadはテンソルとプリミティブ(fingerprintはargparse由来のstr/int/float/
+    # bool/None)だけなので制限付きunpicklerで完全に復元できる。配布された
+    # チェックポイント(Releaseのtask29-checkpoints等)を読む運用があるので既定を安全側に
+    payload = torch.load(path, weights_only=True)
     return (payload["fingerprint"],
             [(d["ia"], d["ib"], d["logits"]) for d in payload["layers"]])
 
