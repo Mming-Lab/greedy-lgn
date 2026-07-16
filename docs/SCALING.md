@@ -226,4 +226,62 @@ members beat three nested ones. (Voting sums exact integer counts, per the issue
 tie-break lesson; accuracies here are CPU-side and sit ~0.05 pt off the CUDA training
 probes for the reason in [RESULTS.md](RESULTS.md)'s numerical footnote.)
 
+### What the vote actually buys: latency, not compute
+
+Because a checkpoint holds every committed layer, the same three seeds can be voted
+**truncated at any depth**, for free. That answers a natural question — if you are
+going to ensemble anyway, can you get away with shallower nets? — with no retraining.
+Per-layer training cost is ~constant here (with `--skip-input` the wiring pool is
+`2352 input + 500 gate` bits regardless of depth; seed 2 measured 343 s/layer), so
+"layers trained" is a fair compute axis:
+
+| depth *d* | 1 net (3-seed mean) | 3-seed vote | vote gain | layers trained | latency |
+|---|---|---|---|---|---|
+| 5 | 85.34% | 88.03% | +2.69 | 15 | 5 |
+| 14 | 91.50% | 92.58% | +1.08 | 42 | 14 |
+| 20 | 92.61% | 93.77% | +1.16 | 60 | 20 |
+| 40 | 93.83% | 94.86% | +1.03 | 120 | 40 |
+| 51 | 94.15% | **95.33%** | +1.18 | 153 | 51 |
+
+The vote gain is strikingly **flat with depth** (~+1.0–1.2 pt from depth 8 on), so
+voting and depth are not fixing the same errors. But budget-matched, the answer
+reverses:
+
+- **Equal training compute (42 layers):** one net at depth 42 ≈ 93.9% vs three nets
+  at depth 14 = 92.58% — **depth wins by ~1.3 pt**.
+- **Equal inference area (~21k gates):** same comparison, same conclusion.
+- **Equal latency (depth 40):** one net 93.8% vs three nets **94.86%** — the
+  ensemble wins by +1.0 pt.
+
+So ensembling is *not* a way to trade layers for members: given a layer budget,
+spend it on depth. What it buys is **critical-path latency** — three nets at depth
+40 reach 94.86% against a single net's 94.91% at depth 78: about the same accuracy
+at **half the latency**, for 1.5× the gates. On an FPGA target where the critical
+path binds and area does not, that is a real trade; on a compute or area budget it
+is not.
+
+**More seeds is a poor use of the same compute.** Averaged over all subsets of the
+three checkpoints:
+
+| members | depth 20 | depth 40 | depth 51 |
+|---|---|---|---|
+| 1 → 2 | +0.90 | +0.90 | +0.91 |
+| 2 → 3 | +0.26 | +0.13 | +0.28 |
+
+The first extra member is worth ~+0.9 pt at every depth; the second only ~+0.2 pt —
+decaying faster than the ~1/M of independent errors. Extrapolated, three more seeds
+at depth 40 (120 layers ≈ 11.4 h) would buy perhaps +0.2 pt, while spending 33
+layers (≈3.1 h) on depth 40 → 51 buys **+0.47 pt** — roughly 10× the compute
+efficiency. (Honest limit: at k=3 there is only one subset, so the 2→3 figure is a
+single draw, not an average; the decaying *direction* is consistent across all three
+depths and is what theory expects, but the magnitude is soft.)
+
+**The ceiling is shared, not individual.** All three members get 257 of the 10,000
+test samples (2.57%) wrong *together*, so no vote of these members can exceed
+**97.43%** — hard samples are hard for everyone. The vote reaches 95.61%, leaving
+1.82 pt on the table: 207 samples have exactly one member right, and a majority
+cannot reach them (soft-vote's score summing rescues 69). That oracle ceiling rises
+with depth (96.18% @20 → 97.03% @40 → 97.29% @51), which is another way of saying
+depth, not membership, is what buys headroom.
+
 Full run logs: [issue #3](https://github.com/Mming-Lab/greedy-lgn/issues/3) (memory-matched), [#8](https://github.com/Mming-Lab/greedy-lgn/issues/8) (ensemble), [#9](https://github.com/Mming-Lab/greedy-lgn/issues/9) (MNIST scaling), [#14](https://github.com/Mming-Lab/greedy-lgn/issues/14) (checkpoint vote).
