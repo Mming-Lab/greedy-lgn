@@ -435,6 +435,8 @@ MNIST untested — per this repo's digits/MNIST protocol a MNIST reversal isn't
 ruled out, but a ~1 pt loss that boost didn't rescue lowered this lever's
 priority rather than justifying the GPU time.
 
+Full run log: [issue #12](https://github.com/Mming-Lab/greedy-lgn/issues/12).
+
 ## Identity warm-start (`--warm-start`): kills the lookahead window, not the residual
 
 Instead of random init, each new layer (that has a previous layer) starts by
