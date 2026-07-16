@@ -59,8 +59,9 @@ Ported via `--dataset mnist` (28×28 → 3-threshold thermometer → 2,352 bits,
   discretization gap is structurally zero, and simplification removes 73% of the gates
   (18,000 → 4,814, verified bit-exact).
 - **Honest positioning: these absolute numbers are far below the difflogic literature**
-  (~97.7% on MNIST, using tens of thousands of gates per layer and much larger training
-  budgets). This is a deliberately small-budget first pass (≤2,000 gates/layer, 30
+  (97.69% on MNIST with a 48k-gate model; 98.47% with 384k gates —
+  [NeurIPS 2022](https://arxiv.org/abs/2210.08277)). This is a deliberately
+  small-budget first pass (≤2,000 gates/layer, 30
   epochs/layer, single seed) where the meaningful comparison is greedy vs end-to-end
   *under the same budget*. Closing the absolute gap — wider layers, more epochs — is
   future work.

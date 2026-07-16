@@ -3,7 +3,7 @@
 ### Vol. 1: the climb to 94% on MNIST, and what each lever taught
 
 > **日本語アブストラクト（要約）**
-> 論理ゲートネットワーク（LGN）を、層をまたぐ逆伝播なしで1層ずつ学習する実証実験の記録です。各層をローカル損失で学習したら即座に0/1へ離散化して凍結し、次の層は本物のビット上で学習します。**500ゲート/層・単発ネットという固定予算**の下、素の88%から出発し、残差readout（＝素朴なブースティング）とskip配線、そして深さ探索を粘らせること（`--patience 10`）で、**手法単体でMNIST 94.5%（3シード平均94.64、深さ41-95、ビット等価検証済み）**まで到達しました。これは新手法の提案ではなく、**既存部品の組合せで制約下どこまで行けるかの探検記**です（勝ちも負けも正直に記録。新規性・優先権は主張しません。既出ならご指摘ください）。同じ単発500の土俵なら**逆伝播(e2e)には勝っています**（e2eは深さを使えず81.8%で頭打ち、greedyは+12.8pt上回る）。ただし20倍以上のゲートを使うdifflogic（~97.7%）にはまだ遠く — その距離こそが次の章の題材です。
+> 論理ゲートネットワーク（LGN）を、層をまたぐ逆伝播なしで1層ずつ学習する実証実験の記録です。各層をローカル損失で学習したら即座に0/1へ離散化して凍結し、次の層は本物のビット上で学習します。**500ゲート/層・単発ネットという固定予算**の下、素の88%から出発し、残差readout（＝素朴なブースティング）とskip配線、そして深さ探索を粘らせること（`--patience 10`）で、**手法単体でMNIST 94.5%（3シード平均94.64、深さ41-95、ビット等価検証済み）**まで到達しました。これは新手法の提案ではなく、**既存部品の組合せで制約下どこまで行けるかの探検記**です（勝ちも負けも正直に記録。新規性・優先権は主張しません。既出ならご指摘ください）。同じ単発500の土俵なら**逆伝播(e2e)には勝っています**（e2eは深さを使えず81.8%で頭打ち、greedyは+12.8pt上回る）。ただしdifflogicにはまだ遠い — しかも**同規模の48,000ゲートで97.69%**です（[arXiv:2210.08277](https://arxiv.org/abs/2210.08277)。本稿の旧版はここに「20倍以上のゲートを使う」と書いていましたが誤りでした — 大型モデル384kゲートのサイズと小型モデルの精度を混同していたものです。当方の看板は生39.5k〜58.5kゲートなので、同じゲート予算でe2eのdifflogicが約3pt上、が正確な位置です）。その距離こそが次の章の題材です。
 
 ---
 
@@ -90,7 +90,7 @@ Every flagship number is checked bit-exact: after training, a pure-Python pass f
 
 The limits, stated plainly:
 
-- **The comparison that matters is to difflogic, not to e2e.** At the same single-500 budget, greedy now *beats* end-to-end backprop (+12.8 pt on MNIST) because e2e can't use depth — so "behind backprop" is no longer the honest framing. The real distance is to **difflogic's ~97.7%**, which uses >20× the gates. 94% here is "impressive *given the constraints*", not state of the art.
+- **The comparison that matters is to difflogic, not to e2e.** At the same single-500 budget, greedy now *beats* end-to-end backprop (+12.8 pt on MNIST) because e2e can't use depth — so "behind backprop" is no longer the honest framing. The real distance is to **difflogic's 97.69%, which it reaches with 48k gates** ([NeurIPS 2022](https://arxiv.org/abs/2210.08277)) — a gate budget *comparable* to this champion's 39.5–58.5k raw (≈32k simplified). An earlier version of this document claimed difflogic "uses >20× the gates"; that was wrong (it conflated the 384k-gate large model's size with the small model's accuracy). At like-for-like gate counts, e2e-trained difflogic is ~3 pt ahead. 94% here is "impressive *given the constraints*", not state of the art.
 - **Convolution is memory-bound** on a 6 GB laptop GPU; the MNIST conv verdict is deferred, not delivered.
 - **Single machine, small budgets.** No claim survives contact with a real scaling study.
 
