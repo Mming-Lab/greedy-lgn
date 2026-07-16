@@ -589,6 +589,8 @@ the depth-40 cap and was still rising). So the robust claim is just the
 accuracy — **+0.55 pt on 3/3 seeds**, consistent with the residual-alone
 low-plane result (+0.75, 3/3) — not a depth or area win.
 
+Full run log: [issue #13](https://github.com/Mming-Lab/greedy-lgn/issues/13).
+
 ## Convolutional wiring, phase 1 (`--local`): a locality prior alone just starves the net (negative)
 
 First step toward convolutional wiring: keep everything else and only change
