@@ -199,5 +199,31 @@ Findings:
 
 Full run log: [issue #9](https://github.com/Mming-Lab/greedy-lgn/issues/9).
 
+## Ensembling saved checkpoints: members you already trained, for the price of inference
 
-Full run logs: [issue #3](https://github.com/Mming-Lab/greedy-lgn/issues/3) (memory-matched), [#8](https://github.com/Mming-Lab/greedy-lgn/issues/8) (ensemble), [#9](https://github.com/Mming-Lab/greedy-lgn/issues/9) (MNIST scaling).
+`--checkpoint` (added for the long depth-exploration runs) saves the *blueprint* of
+every frozen layer — wiring plus gate selection. That means a finished run's `.pt` can
+be rebuilt and voted with **no retraining at all**, which makes an ensemble out of runs
+that were done anyway (`tools/vote_checkpoints.py`; members are `(.pt, depth)` pairs).
+Using the three champion seeds from the depth-exploration batch (MNIST, residual+skip,
+500 gates, each at its own selected depth):
+
+| members | member agreement | best member | soft vote | vs best member |
+|---|---|---|---|---|
+| 2 seeds (s1@41 + s2@78) | 94.9% | 94.96% | **95.44%** | +0.48 |
+| **3 seeds (+ s3@43)** | **92.5%** | 94.96% | **95.61%** | **+0.65** |
+| 3 depths of seed 1 (@41/46/51) | 96.3% | 94.29% | 94.47% | +0.18 |
+| 3 depths of seed 2 (@70/74/78) | 97.1% | 94.96% | 94.96% | +0.00 |
+
+Two readings. **Different seeds work** — 95.61% off three runs that already existed,
+for inference only (the arena headline is the 94.53% 3-seed *mean*; this is a different
+measurement of the same runs, and it costs 3× the circuit area, so it stays off-arena).
+**Same-seed depth snapshots do not.** With a residual readout, depth *d+k* is literally
+depth *d* plus *k* more corrections, so the "members" are nested prefixes and can't
+disagree — the agreement rate says it plainly (92.5% across seeds vs 96.3–97.1% across
+depths of one seed), and the vote ties its best member outright on seed 2. Two diverse
+members beat three nested ones. (Voting sums exact integer counts, per the issue #8
+tie-break lesson; accuracies here are CPU-side and sit ~0.05 pt off the CUDA training
+probes for the reason in [RESULTS.md](RESULTS.md)'s numerical footnote.)
+
+Full run logs: [issue #3](https://github.com/Mming-Lab/greedy-lgn/issues/3) (memory-matched), [#8](https://github.com/Mming-Lab/greedy-lgn/issues/8) (ensemble), [#9](https://github.com/Mming-Lab/greedy-lgn/issues/9) (MNIST scaling), [#14](https://github.com/Mming-Lab/greedy-lgn/issues/14) (checkpoint vote).

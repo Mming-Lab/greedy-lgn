@@ -3,7 +3,7 @@
 ### Vol. 1: the climb to 94% on MNIST, and what each lever taught
 
 > **日本語アブストラクト（要約）**
-> 論理ゲートネットワーク（LGN）を、層をまたぐ逆伝播なしで1層ずつ学習する実証実験の記録です。各層をローカル損失で学習したら即座に0/1へ離散化して凍結し、次の層は本物のビット上で学習します。**500ゲート/層・単発ネットという固定予算**の下、素の88%から出発し、残差readout（＝素朴なブースティング）とskip配線で、**手法単体でMNIST 93.7%（3シード平均93.72、ビット等価検証済み）**まで到達しました。さらに上流の入力二値化（土俵外の前処理）まで足すと3シード平均**94.27%**（単発ベスト94.6%）です。これは新手法の提案ではなく、**既存部品の組合せで制約下どこまで行けるかの探検記**です（勝ちも負けも正直に記録。新規性・優先権は主張しません。既出ならご指摘ください）。同じ単発500の土俵なら**逆伝播(e2e)には勝っています**（e2eは深さを使えず81.8%で頭打ち、greedyは+11.9pt上回る）。ただし20倍以上のゲートを使うdifflogic（~97.7%）にはまだ遠く — その距離こそが次の章の題材です。
+> 論理ゲートネットワーク（LGN）を、層をまたぐ逆伝播なしで1層ずつ学習する実証実験の記録です。各層をローカル損失で学習したら即座に0/1へ離散化して凍結し、次の層は本物のビット上で学習します。**500ゲート/層・単発ネットという固定予算**の下、素の88%から出発し、残差readout（＝素朴なブースティング）とskip配線、そして深さ探索を粘らせること（`--patience 10`）で、**手法単体でMNIST 94.5%（3シード平均94.53、深さ41-78、ビット等価検証済み）**まで到達しました。これは新手法の提案ではなく、**既存部品の組合せで制約下どこまで行けるかの探検記**です（勝ちも負けも正直に記録。新規性・優先権は主張しません。既出ならご指摘ください）。同じ単発500の土俵なら**逆伝播(e2e)には勝っています**（e2eは深さを使えず81.8%で頭打ち、greedyは+12.7pt上回る）。ただし20倍以上のゲートを使うdifflogic（~97.7%）にはまだ遠く — その距離こそが次の章の題材です。
 
 ---
 
@@ -36,16 +36,16 @@ Hard-circuit test accuracy, 500 gates/layer, single net:
 | dataset | plain greedy | greedy, best lever | end-to-end backprop |
 |---|---|---|---|
 | digits | 88.2% | **96.4%** (residual) | 93.6% |
-| MNIST | 74.3% | **93.7%** (residual+skip) | 81.8% (peaks @depth 6) |
+| MNIST | 74.3% | **94.5%** (residual+skip) | 81.8% (peaks @depth 6) |
 
 Why backprop can't be pushed further — and greedy can:
 
 | property | greedy (this repo) | end-to-end backprop |
 |---|---|---|
 | discretization gap | **0 (by construction)** | present, grows with depth |
-| usable depth | 40+ (residual: 27–40) | **collapses past ~6–8** |
+| usable depth | 80+ (residual+skip: 41–78) | **collapses past ~6–8** |
 
-At the plain starting line, greedy *loses* to backprop (~5 pt digits, ~7 pt MNIST) — the honest cost of refusing cross-layer gradients. But once the levers are on, greedy *overtakes* it, and the gap widens with dataset size: **+2.8 pt on digits, +11.9 pt on MNIST** (93.7 vs 81.8). The reason is the last row — a single-500 e2e net can't use depth (its gradients vanish past ~6 layers, so it peaks at 81.8% @depth 6 and then collapses), while greedy has no cross-layer gradient to vanish and stays productive to 27–40 layers. The rest of this log is how that reversal is bought, one lever at a time.
+At the plain starting line, greedy *loses* to backprop (~5 pt digits, ~7 pt MNIST) — the honest cost of refusing cross-layer gradients. But once the levers are on, greedy *overtakes* it, and the gap widens with dataset size: **+2.8 pt on digits, +12.7 pt on MNIST** (94.5 vs 81.8). The reason is the last row — a single-500 e2e net can't use depth (its gradients vanish past ~6 layers, so it peaks at 81.8% @depth 6 and then collapses), while greedy has no cross-layer gradient to vanish and stays productive to 41–78 layers. The rest of this log is how that reversal is bought, one lever at a time.
 
 ## The climb (MNIST, 500 gates/layer, single net)
 
@@ -55,11 +55,12 @@ At the plain starting line, greedy *loses* to backprop (~5 pt digits, ~7 pt MNIS
 | 1 | + windowed lookahead (`--window 2`) | 76.6% |
 | 2 | Forward-Forward objective + lookahead + wrong-answer review | 82.0% |
 | 3 | **residual / boosting readout (`--group-residual`)** | **90.9%** |
-| 4 | **+ skip-input wiring (`--skip-input`)** | **93.7%** (3-seed mean 93.72; best single 93.87%) |
+| 4 | **+ skip-input wiring (`--skip-input`)** | 93.7% (3-seed mean 93.72; best single 93.87%) |
+| 5 | **+ let the depth search run (`--patience 10 --max-layers 80`)** | **94.5%** (3-seed mean 94.53; best single 94.91%) |
 
-Steps 3–4 are the method story, and the headline. Each is bit-exactly verified through simplification (the hardened, simplified circuit is checked identical to the trained one). Step 4 is a 3-seed result (93.82 / 93.48 / 93.87), depth 26–34. **Off the arena, one preprocessing lever goes further**: adding a lower input-binarization plane (`--thresholds 31,63,127,191`) lifts the same 3-seed config to **94.27%** (94.08 / 94.60 / 94.13, best single 94.60%, +0.55 pt, winning 3/3 over the default-threshold control) — but that changes the *input encoding*, not the network or the learning, so it is credited separately (see the input-binarization section). The method headline stays 93.72%.
+Steps 3–5 are the method story, and the headline. Each is bit-exactly verified through simplification (the hardened, simplified circuit is checked identical to the trained one). Step 5 is a 3-seed result (94.36 / 94.91 / 94.32), depth 41–78 — and it is the cheapest step in the table: nothing changed but the stopping rule. The default `--patience 2` had been halting the same champion at depth 26–34 while it was still improving; letting it look 10 layers ahead bought +0.81 pt on 3/3 seeds. Because a frozen layer is never retrained, the depth-*d* net is always a prefix of the final one, so a deeper search costs only time — the rollback is free. Honest caveat: the probe is the test set, so a longer search also picks the best of more noisy draws (~0.1–0.2 pt of the peak is likely optimism; a validation split would settle it). **Off the arena, one preprocessing lever adds more**: a lower input-binarization plane (`--thresholds 31,63,127,191`) lifted the *step-4* config to **94.27%** (+0.55 pt, 3/3 seeds) — but that changes the *input encoding*, not the network or the learning, so it is credited separately (see the input-binarization section), and it has not been re-measured on top of step 5.
 
-**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last — which is exactly why accuracy decays with depth: shallow layers see fresh image information, but their good answers are discarded. Accumulate each layer's prediction instead (plain boosting / deep supervision) and the decay vanishes: a single 500-gate net climbs from 74.3% to **90.9%**, matching a scaling-track flagship that needed 4,000-gate layers × 4 ensemble members (≈16× the gates plus voting) — at a fraction of the inference area. Stacking skip wiring (re-expose the image to every layer) compounds to the method headline **93.72%** (3-seed mean); the off-arena low-plane preprocessing (see below) then reaches 94.27% on top.
+**The clear winner is the residual readout.** Plain greedy throws away every layer's class prediction except the last — which is exactly why accuracy decays with depth: shallow layers see fresh image information, but their good answers are discarded. Accumulate each layer's prediction instead (plain boosting / deep supervision) and the decay vanishes: a single 500-gate net climbs from 74.3% to **90.9%**, matching a scaling-track flagship that needed 4,000-gate layers × 4 ensemble members (≈16× the gates plus voting) — at a fraction of the inference area. Stacking skip wiring (re-expose the image to every layer) compounds to 93.72% (3-seed mean), and letting the depth search run to `--patience 10` lifts that to the method headline **94.53%** at depth 41–78.
 
 ## What each lever taught (wins and losses)
 
@@ -85,11 +86,11 @@ Two standalone tools ([`tools/diagnose.py`](tools/diagnose.py), [`tools/dynamics
 
 ## Verified, and honest about the limits
 
-Every flagship number is checked bit-exact: after training, a pure-Python pass folds constants, removes pass-throughs, merges structural duplicates, eliminates dead gates, and asserts the simplified circuit is identical to the trained one. The residual readout reads *all* layers, so the simplifier was extended to treat every layer as an output; both the 93.72% method headline and the 94.27% low-plane run verify `identical = True` (the previously published 93.85% was unverified and is retired).
+Every flagship number is checked bit-exact: after training, a pure-Python pass folds constants, removes pass-throughs, merges structural duplicates, eliminates dead gates, and asserts the simplified circuit is identical to the trained one. The residual readout reads *all* layers, so the simplifier was extended to treat every layer as an output; the 94.53% method headline, the earlier 93.72%, and the 94.27% low-plane run all verify `identical = True` (the previously published 93.85% was unverified and is retired).
 
 The limits, stated plainly:
 
-- **The comparison that matters is to difflogic, not to e2e.** At the same single-500 budget, greedy now *beats* end-to-end backprop (+11.9 pt on MNIST) because e2e can't use depth — so "behind backprop" is no longer the honest framing. The real distance is to **difflogic's ~97.7%**, which uses >20× the gates. 94% here is "impressive *given the constraints*", not state of the art.
+- **The comparison that matters is to difflogic, not to e2e.** At the same single-500 budget, greedy now *beats* end-to-end backprop (+12.7 pt on MNIST) because e2e can't use depth — so "behind backprop" is no longer the honest framing. The real distance is to **difflogic's ~97.7%**, which uses >20× the gates. 94% here is "impressive *given the constraints*", not state of the art.
 - **Convolution is memory-bound** on a 6 GB laptop GPU; the MNIST conv verdict is deferred, not delivered.
 - **Single machine, small budgets.** No claim survives contact with a real scaling study.
 
@@ -116,7 +117,7 @@ I have not surveyed the literature properly. If any of this — or the combinati
 pip install torch scikit-learn
 python experiment.py --skip-e2e                                   # digits, plain greedy
 python experiment.py --group-residual --skip-e2e                  # the winner
-python experiment.py --dataset mnist --batch 512 --group-residual --skip-input --thresholds 31,63,127,191 --max-layers 40 --skip-e2e --device cuda   # 94.27% (drop --thresholds for the 93.72% method headline)
+python experiment.py --dataset mnist --batch 512 --group-residual --skip-input --max-layers 80 --patience 10 --skip-e2e --device cuda --checkpoint run.pt   # 94.53% method headline (3-seed mean; --checkpoint lets you resume -- it takes 8-11 h/seed)
 python tests.py                                                   # regression: pinned, bit-exact
 ```
 
