@@ -531,25 +531,47 @@ already did it" residual behaviour falls out automatically, no extra code).
 
 digits 3-seed mean (500 gates, standard budget), vs the CE-residual champion:
 
-| config | ffres | ffres + `--group-boost 3` | CE-residual champion |
-|---|---|---|---|
-| residual only | 95.41% | 95.92% (+0.51) | 96.4% |
-| residual + skip | 96.29% | 95.93% (−0.36) | 97.3% |
+| config | ffres | + `--group-boost 3` | + `--group-review` | CE-residual champion |
+|---|---|---|---|---|
+| residual only | 95.41% | 95.92% (+0.51) | 95.63% (+0.22) | **96.4%** |
+| residual + skip | 96.29% | 95.93% (−0.36) | 96.07% (−0.22) | **97.3%** |
 
 **Honest verdict: loses to CE on both configs, consistently across all 3 seeds**
-(not a 1-seed fluke — every seed underperforms the CE headline). Adding
-`--group-boost` doesn't close the gap and its sign even flips between configs
-(mixed, noise-level effect), so the loss isn't explained by missing explicit
-hard-sample weighting. The likely reason: CE's softmax bakes in *implicit hard-negative
-mining* — gradient on the wrong classes concentrates on whichever one is
-currently most confusable, weighted by its softmax probability. The per-class
-independent loss spreads gradient evenly over all 9 wrong classes instead,
-which is a plausible way to lose ~1 pt (untested as a mechanism, only inferred
-from the boost non-result). Checkpoint resume verified bit-exact for this
-objective (it's a `groupsum` flag combination, no new state to persist).
-MNIST untested — per this repo's digits/MNIST protocol a MNIST reversal isn't
-ruled out, but a ~1 pt loss that boost didn't rescue lowered this lever's
-priority rather than justifying the GPU time.
+(not a 1-seed fluke — every seed underperforms the CE headline), and every attempt
+to rescue it lands in the same 95.4–96.3% band with signs that flip between
+configs, i.e. noise.
+
+**A hypothesis this repo tested and did not confirm.** The natural explanation for
+the ~1 pt gap was that CE's softmax bakes in *implicit hard-negative mining* —
+gradient on the wrong classes concentrates on whichever one is currently most
+confusable, weighted by its softmax probability — while the per-class independent
+loss spreads it evenly over all 9. That predicts an explicit negative-focusing
+mechanism should recover the gap, and there was a strong precedent: for the FF
+objective, `--ff-neg review` (a misclassified sample studies *its own* wrong
+answer) was the single biggest lever in this whole document, worth +3.86 pt.
+`--group-review` ports exactly that rule to ffres — push down one wrong class per
+sample (the frozen prefix's own mistake when it is wrong, a random wrong class when
+it is right) instead of all 9 equally. **It does not close the gap** (+0.22 /
+−0.22, sign-flipping like boost). So "ffres lacks CE's hard-negative mining" is now
+evidence-against, not merely untested.
+
+**Why ffres loses is therefore unresolved.** The remaining suspect is the
+absolute-calibration cost — ffres has to place the accumulated score on the right
+side of a threshold, work `argmax` never needed — but that is a guess, not a
+result. Implementation caveat on the review test: it grades with the frozen prefix
+accumulator, and FF's own findings say prefix-grading is the *weak* variant while
+warm-up + self-grading is what made review work. The residual case is not obviously
+the same trap (the accumulator is the current frozen network's actual prediction,
+~94% accurate by depth 40, not a stale several-layers-back one), but a
+warm-up/self-graded version has not been tried.
+
+Checkpoint resume is verified bit-exact for this objective (a `groupsum` flag
+combination with no new persisted state), and `--group-review` off reproduces plain
+ffres bit-for-bit — its negative draw uses an independent generator, so the wiring
+/ logits / minibatch RNG streams are untouched. MNIST untested — per this repo's
+digits/MNIST protocol a MNIST reversal isn't ruled out, but a ~1 pt loss that
+neither boost nor review rescued lowered this lever's priority rather than
+justifying the GPU time.
 
 Full run log: [issue #12](https://github.com/Mming-Lab/greedy-lgn/issues/12).
 

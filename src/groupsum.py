@@ -34,6 +34,11 @@ class GroupSum:
         if cfg.group_residual:
             self.accum_tr = torch.zeros(len(ytr), cfg.n_class, device=cfg.device)
             self.accum_te = torch.zeros(len(yte), cfg.n_class, device=cfg.device)
+        # --group-review の負例ドロー用。独立ジェネレータなので既存のRNG列
+        # (層の配線・logits・minibatch順)には一切干渉しない = 無効時ビット等価。
+        # 種はFF側(ff.py)と同じ規約
+        if getattr(cfg, "group_review", False):
+            self.gneg = torch.Generator().manual_seed(cfg.seed * 31)
         # --local: 位置の帳簿。入力ビットの画素位置は plane*npix+pixel → idx%npix。
         # プール前進とともに更新する(層出力の位置=そのゲートの割当位置)
         if getattr(cfg, "local", 0) > 0:
@@ -59,7 +64,9 @@ class GroupSum:
                    + (f" chain={cfg.epoch_chain}" if cfg.epoch_chain > 0 else "")
                    + f" min={cfg.epoch_min} cap={cfg.epochs}]"
                    if cfg.epoch_stop > 0 else "")
-                + (f" [loss={cfg.group_loss}]" if cfg.group_loss != "ce" else "")
+                + (f" [loss={cfg.group_loss}"
+                   + (" review" if getattr(cfg, "group_review", False) else "")
+                   + "]" if cfg.group_loss != "ce" else "")
                 + (f" [window={cfg.window} commit={cfg.commit} loss={cfg.win_loss}]"
                    if cfg.window > 1 else ""))
     def begin(self, layers, d0):   # 窓学習の準備。窓の入力次元を返す
@@ -109,6 +116,21 @@ class GroupSum:
         W=1のとき従来のgreedy 1層学習と厳密に一致する"""
         cfg = self.cfg
         opt = torch.optim.Adam([p for L in win for p in L.parameters()], lr=cfg.lr)
+        # --group-review(ffres専用): 押し下げる負例を9個から1個に絞る。誤答サンプルは
+        # 「自分がいま答えている誤答クラス」、正答サンプルはランダムな誤りクラス
+        # (FFの--ff-neg reviewと同一規則: FFではこれが最大のレバーで+3.86pt)。
+        # 採点者は凍結prefixの累積のみ(--group-boostと同じ規約。層1は採点者が
+        # いない=累積ゼロでargmaxが縮退するのでランダムのみ)
+        yneg = None
+        if cfg.group_review:
+            off = torch.randint(1, cfg.n_class, (len(self.ytr),),
+                                generator=self.gneg).to(self.ytr.device)
+            rnd = (self.ytr + off) % cfg.n_class      # 一様ランダムな誤りラベル
+            if layers:
+                pred = self.accum_tr.argmax(1)
+                yneg = torch.where(pred != self.ytr, pred, rnd)   # 誤答は自分の誤答
+            else:
+                yneg = rnd
         def loss(idx):
             # uint8常駐プールをこのバッチ分だけfloatへ(0/1なので厳密・ビット等価)
             pool = (self.pool_tr if idx is None else self.pool_tr[idx]).float()
@@ -146,10 +168,15 @@ class GroupSum:
                     base = (cfg.gates / cfg.n_class) / 2.0 / self.tau
                     z = logits - base * (cnt if cfg.group_residual else 1)
                     idx_y = y.view(-1, 1)
-                    sp = F.softplus(z)
-                    per = (F.softplus(-z.gather(1, idx_y).squeeze(1))
-                           + (sp.sum(1) - sp.gather(1, idx_y).squeeze(1))
-                             / (cfg.n_class - 1))   # 負例9次元は平均(9:1の支配を防ぐ)
+                    pos = F.softplus(-z.gather(1, idx_y).squeeze(1))
+                    if yneg is None:      # 既定: 不正解9次元すべてを平等に押し下げ
+                        sp = F.softplus(z)
+                        neg = ((sp.sum(1) - sp.gather(1, idx_y).squeeze(1))
+                               / (cfg.n_class - 1))   # 平均(9:1の支配を防ぐ)
+                    else:                 # --group-review: 押し下げるのは1クラスだけ
+                        yn = (yneg if idx is None else yneg[idx]).view(-1, 1)
+                        neg = F.softplus(z.gather(1, yn).squeeze(1))
+                    per = pos + neg
                     return (per.mean() if wvec is None
                             else (per * wvec).sum() / wvec.sum())
                 if wvec is None:

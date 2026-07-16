@@ -126,6 +126,14 @@ def main():
                         " frozen layers' accumulated prediction (each layer learns to"
                         " correct the running residual). Prediction = argmax of the"
                         " total class-c bits over all layers. groupsum, ce, window=1")
+    p.add_argument("--group-review", action="store_true",
+                   help="ffres only: push down ONE wrong class per sample instead"
+                        " of all 9 equally -- the class the frozen prefix currently"
+                        " answers when it is wrong (the sample's own mistake), a"
+                        " random wrong class when it is right. Same rule as the ff"
+                        " objective's --ff-neg review, which was FF's biggest lever"
+                        " (+3.86 pt); restores the hard-negative focus that the"
+                        " per-class independent loss gives up vs CE's softmax")
     p.add_argument("--group-boost", type=float, default=1.0, metavar="B",
                    help="AdaBoost-style sample reweighting on top of residual:"
                         " samples the frozen running sum currently misclassifies get"
@@ -257,6 +265,10 @@ def main():
         p.error("--group-residual needs groupsum objective and ce/ffres loss")
     if cfg.group_boost != 1.0 and not cfg.group_residual:
         p.error("--group-boost needs --group-residual")
+    if cfg.group_review and cfg.group_loss != "ffres":
+        p.error("--group-review needs --group-loss ffres (or --objective"
+                " ff-residual): ce's softmax already concentrates the negative"
+                " gradient on the most confusable class")
     if cfg.warm_start > 0 and cfg.objective != "groupsum":
         p.error("--warm-start needs groupsum objective")
     if (cfg.epoch_stop > 0 or cfg.epoch_peak > 0) and cfg.objective != "groupsum":
