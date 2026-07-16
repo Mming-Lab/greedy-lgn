@@ -391,6 +391,50 @@ gain (2/3 seeds win, mean +0.43 pt on MNIST), consistent with the hypothesis
 that gradient boosting already focuses on hard samples implicitly — the explicit
 reweight only doubles down. Does not touch the residual+skip champion (93.72%, 3-seed mean).
 
+## FF-Residual (`--objective ff-residual`): one-pass Forward-Forward on the residual readout — negative result
+
+Hinton's Forward-Forward needs two passes (a positive image with the true label
+overlaid, a negative image with a wrong label) because it trains all layers
+"simultaneously" without backprop across layers. That two-pass trick is a
+workaround for FF's original setting, not a requirement of the *goodness*
+idea itself. In greedy-LGN each layer being trained is always the de facto
+last layer (everything before it is frozen, its output feeds the readout
+directly), so the same instruction — raise the true class's evidence, lower
+the others — can be applied straight to the per-class scores, no label overlay,
+one forward pass on the plain image.
+
+Implementation (`--group-loss ffres`, `src/groupsum.py`): reuses the existing
+residual accumulator (`--group-residual`'s running class-score sum) but
+replaces its cross-entropy loss with a **per-class independent logistic loss**
+— no softmax, so classes don't compete for probability mass. The accumulated
+score is depth-centred (`Y_cum − d × gates/(2·n_class·τ)`, the expected score
+of a random layer) so a fixed threshold at 0 stays meaningful as the sum grows
+with depth; layers whose running total already clears the margin get near-zero
+gradient from the softplus saturation (the "don't bother, previous layers
+already did it" residual behaviour falls out automatically, no extra code).
+
+digits 3-seed mean (500 gates, standard budget), vs the CE-residual champion:
+
+| config | ffres | ffres + `--group-boost 3` | CE-residual champion |
+|---|---|---|---|
+| residual only | 95.41% | 95.92% (+0.51) | 96.4% |
+| residual + skip | 96.29% | 95.93% (−0.36) | 97.3% |
+
+**Honest verdict: loses to CE on both configs, consistently across all 3 seeds**
+(not a 1-seed fluke — every seed underperforms the CE headline). Adding
+`--group-boost` doesn't close the gap and its sign even flips between configs
+(mixed, noise-level effect), so the loss isn't explained by missing explicit
+hard-sample weighting. The likely reason: CE's softmax bakes in *implicit hard-negative
+mining* — gradient on the wrong classes concentrates on whichever one is
+currently most confusable, weighted by its softmax probability. The per-class
+independent loss spreads gradient evenly over all 9 wrong classes instead,
+which is a plausible way to lose ~1 pt (untested as a mechanism, only inferred
+from the boost non-result). Checkpoint resume verified bit-exact for this
+objective (it's a `groupsum` flag combination, no new state to persist).
+MNIST untested — per this repo's digits/MNIST protocol a MNIST reversal isn't
+ruled out, but a ~1 pt loss that boost didn't rescue lowered this lever's
+priority rather than justifying the GPU time.
+
 ## Identity warm-start (`--warm-start`): kills the lookahead window, not the residual
 
 Instead of random init, each new layer (that has a previous layer) starts by
