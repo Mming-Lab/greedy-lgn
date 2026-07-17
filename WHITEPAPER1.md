@@ -125,4 +125,4 @@ Full setups, number tables, and disproven hypotheses live in [RESULTS.md](docs/R
 
 ---
 
-*Vol. 2, if it happens, is the convolution chapter — whether a growing receptive field closes the gap to 97%. No promises; the losses get logged either way.*
+*[Vol. 2](WHITEPAPER2.md) drops this volume's budget and asks how far the same backprop-free recipe climbs when width and depth are free: **97.04%** on MNIST (3 seeds, ~66k gates, bit-exact), and the wall it hit. The convolution chapter moved to Vol. 3.*

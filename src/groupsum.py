@@ -215,15 +215,41 @@ class GroupSum:
             s_tr, s_te = self.accum_tr, self.accum_te
         a_te = accuracy(s_te, self.yte)
         a_tr = accuracy(s_tr, self.ytr)
-        # プールはuint8で前進(hardビットは厳密に0.0/1.0なので変換は可逆)
-        self.pool_tr = next_pool(h_tr.to(torch.uint8), self.X_u8, self.pool_tr, cfg)
-        self.pool_te = next_pool(h_te.to(torch.uint8), self.Xte_u8, self.pool_te, cfg)
+        # プールはuint8で前進(hardビットは厳密に0.0/1.0なので変換は可逆)。
+        # 再束縛でfloat版のhを即解放する: 16,000ゲートではh_trのfloatが3.84GBあり、
+        # これを持ったままプール遷移すると6GBに載らない(2026-07-17実測)
+        h_tr, h_te = h_tr.to(torch.uint8), h_te.to(torch.uint8)
+        if cfg.skip_input and not cfg.skip_all:
+            # skip-input時はin-place前進: プール=[X ∥ h]のX部分は全層で不変なので、
+            # 初回だけバッファを確保し、以降はh部分を上書きするだけ。従来の
+            # cat([X, h])は旧プール+h+新プールが一瞬同時に生き、16,000ゲートで
+            # 約3.2GBの過渡ピークになりプール遷移でOOMした(issue #9の積み残し
+            # だった「in-place pool buffer」案)。書き込むバイト列は従来と同一
+            # =ビット等価(tests.pyの--checkpointケースがこの経路を回帰検証)
+            self.pool_tr = self._pool_inplace(self.pool_tr, self.X_u8, h_tr)
+            self.pool_te = self._pool_inplace(self.pool_te, self.Xte_u8, h_te)
+        else:
+            self.pool_tr = next_pool(h_tr, self.X_u8, self.pool_tr, cfg)
+            self.pool_te = next_pool(h_te, self.Xte_u8, self.pool_te, cfg)
         # --local: プール位置も同じ規則で前進(no-skip=ゲート位置のみ、
         # skip-input=[入力位置 || ゲート位置])
         if getattr(cfg, "local", 0) > 0:
             self.pos_pool = (self.pos_input + self._pending_pos
                              if cfg.skip_input else list(self._pending_pos))
         return a_tr, a_te
+    @staticmethod
+    def _pool_inplace(pool, X, h):
+        """skip-input専用のプール前進。初回(プール=Xのみ)だけ[X ∥ h]バッファを
+        確保し、以降はh部分の上書きのみ = 追加のGPU確保ゼロ"""
+        w = X.shape[1] + h.shape[1]
+        if pool.shape[1] != w:
+            buf = torch.empty(X.shape[0], w, dtype=torch.uint8, device=X.device)
+            buf[:, :X.shape[1]] = X
+            buf[:, X.shape[1]:] = h
+            return buf
+        pool[:, X.shape[1]:] = h
+        return pool
+
     @torch.no_grad()
     def counts(self, layers, X, y):
         """アンサンブル投票用のクラス別スコア [B, n_class](=GroupSumカウント)。
