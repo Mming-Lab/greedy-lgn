@@ -94,24 +94,28 @@ def run_case(name, args, expect, device):
     return (not bad), dt, "\n".join(bad)
 
 
-def run_checkpoint_case(device):
+def run_checkpoint_case(device,
+                        base=("--gates 200 --epochs 30 --group-residual"
+                              " --skip-input --skip-e2e --seed 1"),
+                        stop_at=3, full_at=6):
     """--checkpointの往復(分割実行)がノンストップ実行とビット単位で一致するか。
     層を確定するたびにtorch.saveし、再開時にfingerprintを照合して復元する
     本番コードパスをそのまま通す(タスク29のMNIST一晩バッチ分割を支える機能)。
-    max-layers 3で一度止め、同じ--checkpointパスでmax-layers 6を再実行して
-    最終summaryがノンストップ実行と厳密一致することを見る"""
-    base = ("--gates 200 --epochs 30 --group-residual --skip-input"
-            " --skip-e2e --seed 1")
+    max-layers stop_atで一度止め、同じ--checkpointパスでmax-layers full_atを
+    再実行して最終summaryがノンストップ実行と厳密一致することを見る。
+    baseの差し替えでconv版(ConvLogicLayerのleaf/logits/幾何の復元)も同じ枠で検証"""
     t0 = time.time()
-    full, _, err1 = _run(f"{base} --max-layers 6", device)
+    full, _, err1 = _run(f"{base} --max-layers {full_at}", device)
     if full is None:
         return False, time.time() - t0, f"baseline run failed:\n{err1}"
     with tempfile.TemporaryDirectory() as d:
         ck = os.path.join(d, "ck.pt")
-        part1, _, err2 = _run(f"{base} --max-layers 3 --checkpoint {ck}", device)
+        part1, _, err2 = _run(f"{base} --max-layers {stop_at} --checkpoint {ck}",
+                              device)
         if part1 is None:
             return False, time.time() - t0, f"part1 run failed:\n{err2}"
-        part2, _, err3 = _run(f"{base} --max-layers 6 --checkpoint {ck}", device)
+        part2, _, err3 = _run(f"{base} --max-layers {full_at} --checkpoint {ck}",
+                              device)
         if part2 is None:
             return False, time.time() - t0, f"part2 (resume) run failed:\n{err3}"
     bad = [f"  {k}: baseline {full.get(k)!r} != resumed {part2.get(k)!r}"
@@ -137,6 +141,18 @@ def main():
         total += 1
         ok, dt, detail = run_checkpoint_case(a.device)
         print(f"[{'PASS' if ok else 'FAIL'}] checkpoint resume == non-stop  ({dt:.0f}s)")
+        if not ok:
+            print(detail)
+            failed += 1
+        # conv版: ConvLogicLayer(leaf/logits/幾何)の保存・復元と、リプレイ中の
+        # 特徴マップ形状の前進(commitがL.C/L.Hp/L.Wpから取る)を検証
+        total += 1
+        ok, dt, detail = run_checkpoint_case(
+            a.device, base=("--conv 16 --conv-tree 2 --epochs 30"
+                            " --group-residual --skip-e2e --seed 1"),
+            stop_at=1, full_at=3)
+        print(f"[{'PASS' if ok else 'FAIL'}] conv checkpoint resume == non-stop"
+              f"  ({dt:.0f}s)")
         if not ok:
             print(detail)
             failed += 1

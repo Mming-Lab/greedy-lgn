@@ -55,8 +55,8 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
             raise SystemExit("--checkpoint fingerprint mismatch, refusing to"
                               f" resume (settings changed): {diff}")
         print(f"=== resumed from checkpoint: {len(saved)} layers ===")
-        for ia, ib, logits in saved:
-            L = checkpoint.rebuild_layer(ia, ib, logits, cfg.device)
+        for d in saved:
+            L = checkpoint.rebuild(d, cfg.device)
             layers.append(L)
             track(*obj.commit(layers, L))
 

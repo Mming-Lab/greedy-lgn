@@ -153,10 +153,8 @@ class ConvGroupSum:
         Cin, H, W = self.shape
         pool = cfg.conv_pool if min(H, W) >= 2 * cfg.conv_pool else 1
         C = self._channels(d0)
-        L = ConvLogicLayer(Cin, H, W, C, cfg.conv_k, cfg.conv_tree, pool,
-                           seed=cfg.seed * 100 + d0 + k + 1)
-        self._pending_shape = (C, L.Hp, L.Wp)
-        return L
+        return ConvLogicLayer(Cin, H, W, C, cfg.conv_k, cfg.conv_tree, pool,
+                              seed=cfg.seed * 100 + d0 + k + 1)
     def _tau(self, bits):
         return float(np.sqrt(bits / self.cfg.n_class))
     def train(self, win, layers, d0):
@@ -187,10 +185,13 @@ class ConvGroupSum:
             self.accum_te = self.accum_te + s_te
             s_tr, s_te = self.accum_tr, self.accum_te
         a_tr, a_te = accuracy(s_tr, self.ytr), accuracy(s_te, self.yte)
-        # hardビット(厳密に0.0/1.0)で前進、常駐はuint8
+        # hardビット(厳密に0.0/1.0)で前進、常駐はuint8。
+        # 形状は層自身から取る(旧実装はmake_layerが置く_pending_shape依存で、
+        # make_layerを通らないチェックポイント再開リプレイだと前進しなかった。
+        # 値は同一(make_layerのCとL.C、L.Hp/L.Wpは同物)なのでビット等価)
         self.pool_tr = h_tr.to(torch.uint8)
         self.pool_te = h_te.to(torch.uint8)
-        self.shape = self._pending_shape
+        self.shape = (L.C, L.Hp, L.Wp)
         return a_tr, a_te
     @torch.no_grad()
     def counts(self, layers, X, y):

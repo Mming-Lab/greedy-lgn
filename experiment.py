@@ -303,12 +303,12 @@ def main():
                          or cfg.warm_start > 0):
         p.error("--conv is groupsum + window=1 + no-skip only (no recur/seq/"
                 "local/warm-start combination yet)")
-    if cfg.checkpoint and (cfg.objective != "groupsum" or cfg.seq or cfg.conv
+    if cfg.checkpoint and (cfg.objective != "groupsum" or cfg.seq
                            or cfg.carry or cfg.ensemble > 1):
-        p.error("--checkpoint is groupsum (dense), single-network, no-carry only"
-                " for now (ConvLogicLayer/FF/seq state isn't reconstructable yet,"
-                " ensemble needs a per-member path, carry needs its uncommitted"
-                " lookahead layers persisted too)")
+        p.error("--checkpoint is groupsum (dense/conv), single-network, no-carry"
+                " only for now (FF/seq state isn't reconstructable yet, ensemble"
+                " needs a per-member path, carry needs its uncommitted lookahead"
+                " layers persisted too)")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 

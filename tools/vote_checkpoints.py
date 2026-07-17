@@ -34,6 +34,8 @@ def scores_by_depth(path, depths, device):
     cfg.device = device
     if not cfg.group_residual:
         raise SystemExit(f"{path}: このツールは残差readout(--group-residual)専用")
+    if getattr(cfg, "conv", 0):
+        raise SystemExit(f"{path}: conv回路は未対応(プーリング付き累積が別物のため)")
     if max(depths) > len(saved):
         raise SystemExit(f"{path}: 深さ{max(depths)}は未確定(保存済みは{len(saved)}層)")
     _, Xte, _, yte = [t.to(device) for t in
@@ -41,10 +43,10 @@ def scores_by_depth(path, depths, device):
     pool = Xte
     accum = torch.zeros(len(yte), cfg.n_class, device=device)
     out = {}
-    for d, (ia, ib, logits) in enumerate(saved, 1):
+    for d, dd in enumerate(saved, 1):
         if d > max(depths):
             break
-        L = checkpoint.rebuild_layer(ia, ib, logits, device)
+        L = checkpoint.rebuild(dd, device)
         h = pool
         for _ in range(reps(pool.shape[1], cfg)):   # --recur(task29は1回)
             h = hard_batched(L, h)
