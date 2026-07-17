@@ -139,7 +139,7 @@ python experiment.py --dataset mnist --device cuda --group-residual --skip-input
 python tests.py     # regression: pinned, bit-exact
 ```
 
-Trained circuits are published as release assets — rebuild them with `--checkpoint` and re-verify the numbers without repeating the training. Raw logs: one GitHub issue per experiment.
+The three trained circuits are published as release assets ([`vol2-8000-checkpoints`](https://github.com/Mming-Lab/greedy-lgn/releases/tag/vol2-8000-checkpoints)) — rebuild them with `--checkpoint` or `tools/vote_checkpoints.py` and re-verify every number above without repeating the training. Raw logs: [issue #15](https://github.com/Mming-Lab/greedy-lgn/issues/15).
 
 ---
 

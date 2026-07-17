@@ -19,7 +19,7 @@ Proof-of-concept. Runs on CPU in a few minutes. A single self-contained script, 
 | [difflogic](https://arxiv.org/abs/2210.08277) (e2e backprop) | 97.69% | 48k | the platform this borrows from |
 | [LILogic Net](https://arxiv.org/abs/2511.12340) (gradient-based) | 98.45% | 8k | far better gates-per-point |
 
-Every number here is the **hard circuit's**, verified bit-exact against the trained network. On gate efficiency this repo loses clearly — the interesting part is the constraint (layer-local training only), not the number.
+Every number here is the **hard circuit's**, verified bit-exact against the trained network. On gate efficiency this repo loses clearly — the interesting part is the constraint (layer-local training only), not the number. The trained circuits are downloadable ([Vol. 2 checkpoints](https://github.com/Mming-Lab/greedy-lgn/releases/tag/vol2-8000-checkpoints)): re-verify them in minutes, no training needed.
 
 > **Just me playing around, not research.** I don't read papers — I bounce ideas off an AI assistant, run the experiments, and enjoy watching the accuracy points move. That's the whole thing. Nothing here is peer-reviewed, and the only "literature search" was asking the AI, so I make **no novelty or priority claims**. Plenty of these ideas probably already exist under names I don't know. Read it as a reproducible playground log, not a contribution; if it duplicates prior work, that's expected — pointers are welcome via an issue.
 
@@ -240,6 +240,6 @@ MIT
 
 **その他の死にレバー**(正直な記録 — いずれも既存フラグの設定変更・組合せで実測した負け): エポック増(`--epochs`2倍で+0.1pt)、window×幅・window×skip(組合せが加算されない)、warmupなしのhard負例(`--ff-neg hard`単体は崩壊)、分位点閾値(`--thresholds q3〜q5`は負け — 診断は「上げろ」、データは「低い面を足せ」だった)、FF-Residual(`--objective ff-residual`、ラベル埋め込み無しの1パスFF+残差累積 — CE残差に digits 3シードで一貫して-1pt前後。boostでも、FFで最大レバーだった誤答復習の移植(`--group-review`)でも埋まらず、「CEの暗黙の負例集中を手放したのが原因」という仮説は**反証**された。負ける理由は未解明)、深さカーブの外挿による早期打ち切り(飽和カーブ自体はよく当てはまる(Hill型 R²≥0.998)が、15層フィットの予測が3シード目で+1.9pt外れて実用にならない)。
 
-各実験のセットアップ・数値表・**反証された仮説**は [RESULTS.md](docs/RESULTS.md)(スケーリング系は [SCALING.md](docs/SCALING.md))に、生ログは実験ごとの個別issue(#1〜#14、各セクションからリンク)にあります。回路の中身を覗く診断ツール([tools/diagnose.py](tools/diagnose.py)=ゲート種類分布・機能的冗長度、[tools/dynamics.py](tools/dynamics.py)=学習済み再帰セルの発振器census)もあります。
+各実験のセットアップ・数値表・**反証された仮説**は [RESULTS.md](docs/RESULTS.md)(スケーリング系は [SCALING.md](docs/SCALING.md))に、生ログは実験ごとの個別issue(#1〜#15、各セクションからリンク)にあります。回路の中身を覗く診断ツール([tools/diagnose.py](tools/diagnose.py)=ゲート種類分布・機能的冗長度、[tools/dynamics.py](tools/dynamics.py)=学習済み再帰セルの発振器census)もあります。
 
 位置づけ: 構成要素のほとんどは先行研究からの借り物です。全体は「**各層を学習→即離散化→凍結し、次層を本物のビット上で学習する**」という素朴なレシピで組み立てられていますが、これが新しいかどうかは分かりません(ちゃんと調べていないので既出の可能性は高いです)。離散化ギャップゼロはこのレシピの帰結、メモリ効率と適応深さはCascade-Correlation / Forward-Forward由来です。詳細は英語本文の「What this borrows, and what it puts together」を参照してください。
