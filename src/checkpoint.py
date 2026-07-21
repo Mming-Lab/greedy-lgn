@@ -3,8 +3,14 @@ run_greedy(src/greedy.py)から呼ばれる。学習途中の状態(optimizer等
 — 保存単位は「離散化済み・凍結済みの層」のみ(このアーキテクチャは層が確定した
 時点で再学習不要になるので、これで十分な粒度になる)。
 対応: groupsum(dense)=LogicLayer(ia/ib/logits) と ConvGroupSum=ConvLogicLayer
-(leaf/logits/幾何)。FF/seq/ensemble/carryはexperiment.py側のp.errorで
---checkpointと排他にしている。"""
+(leaf/logits/幾何)。FF/seq/ensembleはexperiment.py側のp.errorで--checkpointと
+排他にしている。
+--carry対応(2026-07-19): carryは「コミットされなかった先読み層を次スライドへ
+持ち越す」ので、凍結層だけでは状態が足りない。payloadに"carry"(未コミット層の
+リスト、離散化前のsoft重みをそのまま)を追加して再開可能にした。carry層は
+学習途中だがlogitsを丸ごと保存するので状態は完全(このコードベースのRNGは全て
+(seed,d0,k)由来のローカルGeneratorで、グローバルRNG状態に依存しない=再開は
+ビット等価)。"carry"キーの無い旧.pt(task29/vol2のRelease資産)は空扱いで読める。"""
 import os
 import torch
 from core import LogicLayer
@@ -19,14 +25,15 @@ FIELDS = ["dataset", "gates", "seed", "thresholds", "window", "commit", "carry",
           "warm_start", "local", "recur", "objective", "win_loss", "lr", "batch",
           "epoch_stop", "epoch_peak", "epoch_peak_decay", "epoch_chain",
           "epoch_min", "epoch_check", "epoch_patience", "epochs", "n_class",
-          "conv", "conv_k", "conv_tree", "conv_pool", "conv_sched"]
+          "conv", "conv_k", "conv_tree", "conv_pool", "conv_sched",
+          "conv_pool_sched"]
 
 # FIELDSへ後から追加したキーの既定値(後方互換)。conv対応(2026-07-17)以前に
 # 保存された.pt(task29/vol2のRelease資産を含む)はこれらのキーを持たないので、
 # 読み込み時に既定値で埋めてfingerprint照合を通す。既定値=「そのレバーはオフ」
 # なので、旧チェックポイントは全てdense=conv無しであり意味も正しい
 COMPAT_DEFAULTS = {"conv": 0, "conv_k": 3, "conv_tree": 2, "conv_pool": 2,
-                   "conv_sched": None}
+                   "conv_sched": None, "conv_pool_sched": None}
 
 def fingerprint(cfg):
     return {f: getattr(cfg, f) for f in FIELDS}
@@ -40,17 +47,20 @@ def _pack(L):
     return {"ia": L.ia.cpu(), "ib": L.ib.cpu(),
             "logits": L.logits.detach().cpu()}
 
-def save(path, layers, cfg):
+def save(path, layers, cfg, carry=()):
     """凍結済みlayersを丸ごと書き直す(層1つ確定するたびに呼ぶ想定、数MB程度)。
+    carry=次スライドへ持ち越す未コミット層(--carry時のみ非空)。
     アトミック書き込み: 一時ファイルに書いてからos.replaceで差し替えるので、
     保存中に電源が落ちても既存のpathは無傷のまま(古い状態がそのまま残る)"""
     payload = {"fingerprint": fingerprint(cfg),
-               "layers": [_pack(L) for L in layers]}
+               "layers": [_pack(L) for L in layers],
+               "carry": [_pack(L) for L in carry]}
     tmp = path + ".tmp"
     torch.save(payload, tmp)
     os.replace(tmp, path)   # Windows NTFSでもatomic rename
 
 def load(path):
+    """(fingerprint, 凍結層, 未コミットのcarry層) を返す。"""
     # weights_only=True: pickleの任意コード実行を許さない安全な読み込み。
     # payloadはテンソルとプリミティブ(fingerprintはargparse由来のstr/int/float/
     # bool/None/リスト)だけなので制限付きunpicklerで完全に復元できる。配布された
@@ -59,7 +69,8 @@ def load(path):
     fp = payload["fingerprint"]
     for k, v in COMPAT_DEFAULTS.items():
         fp.setdefault(k, v)
-    return fp, payload["layers"]
+    # "carry"キーの無い旧.pt(carry対応=2026-07-19より前)は空扱い=従来の意味
+    return fp, payload["layers"], payload.get("carry", [])
 
 def rebuild(d, device):
     """保存dictから層を再構築(型はキーで判別)。RNGドローはwires=/上書きで

@@ -29,7 +29,7 @@ from core import (load_data, group_sum, accuracy, next_pool, hard_batched, reps)
 def scores_by_depth(path, depths, device):
     """.ptを1回だけ再生し、指定された各深さでの累積クラススコアを返す。
     戻り値: ({深さ: [B, n_class] 整数カウント}, fingerprint, yte)"""
-    fp, saved = checkpoint.load(path)
+    fp, saved, _ = checkpoint.load(path)   # 投票は凍結層のみ使う(carryは不要)
     cfg = SimpleNamespace(**fp)
     cfg.device = device
     if not cfg.group_residual:

@@ -224,6 +224,14 @@ def main():
     p.add_argument("--conv-pool", type=int, default=2, metavar="P",
                    help="pooling factor per conv layer (1 = no pooling;"
                         " automatically disabled once the map is too small)")
+    p.add_argument("--conv-pool-sched", type=str, default=None, metavar="P0,P1,...",
+                   help="per-layer pooling schedule for --conv (overrides the flat"
+                        " --conv-pool): e.g. 2,2,1,1 = pool only in the first two"
+                        " layers (28->14->7), then stop pooling so later layers"
+                        " keep a 7x7 map and spend the budget on DEPTH instead of"
+                        " collapsing to 1x1. Depths past the list reuse the last"
+                        " value. Motivation (task 28 MNIST verdict): uniform pool2"
+                        " caps conv's usable depth at ~9 layers.")
     p.add_argument("--conv-sched", type=str, default=None, metavar="C0,C1,...",
                    help="per-layer channel schedule for --conv (overrides the flat"
                         " --conv count): e.g. 128,64,32 = inverted-funnel (wide"
@@ -258,8 +266,12 @@ def main():
                                                              "ffres")
     if not (1 <= cfg.commit <= cfg.window):
         p.error("--commit must satisfy 1 <= commit <= window")
-    if cfg.carry and (cfg.skip_input or cfg.skip_all):
-        p.error("--carry is no-skip only (carried layers assume constant in_dim)")
+    # --carry × skip: 制約を解除(2026-07-19)。持ち越しは位置J+i→位置iの移動だが、
+    # skip-input はプール=[X ∥ 直前層h]でd0>=1なら全位置 in_dim = X+gates 一定、
+    # skip-all は位置kが pool(d0)+k*gates でJ層コミット時にプールが J*gates 伸びる
+    # ため (J+i) → i で次元が一致する。中身も、移動元が読んでいた「窓内の先行層の
+    # 出力」が移動先では「直前にコミットされた層の出力」= 同一の層なので保存される
+    # (carry層の配線indexが指す先が変わらない)。検証: tests.pyのcarry+skipケース
     if cfg.group_residual and (cfg.objective != "groupsum"
                                or cfg.group_loss not in ("ce", "ffres")):
         p.error("--group-residual needs groupsum objective and ce/ffres loss")
@@ -297,6 +309,10 @@ def main():
                       if cfg.conv_sched else None)
     if cfg.conv_sched:
         cfg.conv = cfg.conv_sched[0]
+    # --conv-pool-sched "2,2,1,1" を数値リスト化(層別プーリング係数)。未指定はNone
+    # =従来どおり全層 cfg.conv_pool 一定でビット等価
+    cfg.conv_pool_sched = ([int(x) for x in cfg.conv_pool_sched.split(",")]
+                           if cfg.conv_pool_sched else None)
     if cfg.conv > 0 and (cfg.objective != "groupsum" or cfg.window > 1
                          or cfg.skip_input or cfg.skip_all or cfg.carry
                          or cfg.recur > 1 or cfg.seq or cfg.local > 0
@@ -304,11 +320,10 @@ def main():
         p.error("--conv is groupsum + window=1 + no-skip only (no recur/seq/"
                 "local/warm-start combination yet)")
     if cfg.checkpoint and (cfg.objective != "groupsum" or cfg.seq
-                           or cfg.carry or cfg.ensemble > 1):
-        p.error("--checkpoint is groupsum (dense/conv), single-network, no-carry"
-                " only for now (FF/seq state isn't reconstructable yet, ensemble"
-                " needs a per-member path, carry needs its uncommitted lookahead"
-                " layers persisted too)")
+                           or cfg.ensemble > 1):
+        p.error("--checkpoint is groupsum (dense/conv), single-network only for"
+                " now (FF/seq state isn't reconstructable yet, ensemble needs a"
+                " per-member path)")
     cfg.n_class = 10
     torch.manual_seed(cfg.seed); np.random.seed(cfg.seed)
 

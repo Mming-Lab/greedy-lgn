@@ -8,8 +8,12 @@ RNGの消費順序か演算順序が変わっている)。
 
 Usage:
     python tests.py                # CPU, ~10-15 min
-    python tests.py --device cuda  # GPU, ~2 min (numbers are identical to CPU)
+    python tests.py --device cuda  # GPU, ~4 min
     python tests.py --only ff      # substring filter on case names
+
+CPUとCUDAはほぼ全ケースでビット等価だが、conv だけは縮約順序の実装差で
+1サンプル割れる。期待値は {"cpu": ..., "cuda": ...} と書けば実行デバイスの
+値が使われる(丸め許容は入れない — 検出力を落とさないため)。
 """
 import argparse, json, os, subprocess, sys, tempfile, time
 
@@ -61,11 +65,33 @@ CASES = [
     # 2026-07-14 追加: convの初のピン(メモリ最適化=uint8プール+チャンネル
     # チャンクの導入時にmainで採取)。digitsはCc>=Cの1チャンク経路=従来と
     # ビット等価であることをピンで保証する(マルチチャンクのlogits勾配は
-    # 縮約順序の丸めが変わりうるため対象外 — conv.py forwardのコメント参照)
+    # 縮約順序の丸めが変わりうるため対象外 — conv.py forwardのコメント参照)。
+    # 2026-07-19: このケースだけCPUとCUDAで値が割れる(450中1サンプル、
+    # 0.64 vs 0.6422)。採取時はCUDAだけを見ており、既定のCPU実行では最初から
+    # 落ちていた(今日のcarry作業とは無関係の既存不一致 — コミット済みHEADでも
+    # 再現することを確認済み)。原因は畳み込みの縮約順序の実装差で、これは
+    # 直せない類のもの(docs/RESULTS.md「Numerical footnote」節)。丸め許容を
+    # 入れると回帰検出力が落ちるので、両デバイスの値を厳密にピンする
     ("conv C64/tree3 + residual",
      "--conv 64 --conv-tree 3 --epochs 60 --max-layers 3 --group-residual"
      " --skip-e2e",
-     {"greedy_hard_test_acc": 0.6422, "greedy_depth": 3}),
+     {"greedy_hard_test_acc": {"cpu": 0.64, "cuda": 0.6422},
+      "greedy_depth": 3}),
+    # 2026-07-19 追加: --carry(コミットされなかった先読み層を次スライドへ持ち越す
+    # 足場方式)。それまでスイートに1本も無かった。carryはwin[J:]を重み付きで
+    # 次スライドのwin先頭へ差し込むので、窓の張り直し・配線indexの読み替えが
+    # 絡む。skip版は「持ち越しで位置J+i→iに移っても読むプール内容が変わらない」
+    # ことの回帰(2026-07-19にno-skip限定の制約を解除した経路)
+    ("carry W4J1 + residual (no-skip)",
+     "--gates 200 --epochs 30 --max-layers 4 --group-residual"
+     " --window 4 --commit 1 --carry --skip-e2e",
+     {"greedy_hard_test_acc": 0.8311, "greedy_depth": 4,
+      "gates_before": 800, "gates_after_simplify": 603}),
+    ("carry W4J1 + residual + skip-input",
+     "--gates 200 --epochs 30 --max-layers 4 --group-residual --skip-input"
+     " --window 4 --commit 1 --carry --skip-e2e",
+     {"greedy_hard_test_acc": 0.8756, "greedy_depth": 4,
+      "gates_before": 800, "gates_after_simplify": 635}),
 ]
 
 
@@ -89,8 +115,14 @@ def run_case(name, args, expect, device):
     summary, dt, err = _run(args, device)
     if summary is None:
         return False, dt, err
+    # 期待値が {"cpu": ..., "cuda": ...} のdictなら実行デバイスの値を採る。
+    # 大半のケースはCPU/CUDAでビット等価だが、convだけは縮約順序の実装差で
+    # 1サンプルずれる(CASESのconv注記参照)。どちらのデバイスでも厳密一致を
+    # 保ちたいので、丸め許容を入れずに両方をピンする
+    exp = {k: (v[device] if isinstance(v, dict) else v)
+           for k, v in expect.items()}
     bad = [f"  {k}: expected {v!r}, got {summary.get(k)!r}"
-           for k, v in expect.items() if summary.get(k) != v]
+           for k, v in exp.items() if summary.get(k) != v]
     return (not bad), dt, "\n".join(bad)
 
 
@@ -156,6 +188,22 @@ def main():
         if not ok:
             print(detail)
             failed += 1
+        # carry版(2026-07-19): 凍結層に加えて「未コミットの先読み層」も保存・復元
+        # できているかを見る。ここが欠けると再開後の窓先頭が新規層に化けるので、
+        # 層stop_at+1以降がノンストップ実行とずれる = 最終summaryの不一致で落ちる。
+        # no-skip と skip-input の両方(次元の詰め方が違うため別経路)
+        for tag, extra in (("no-skip", ""), ("skip-input", " --skip-input")):
+            total += 1
+            ok, dt, detail = run_checkpoint_case(
+                a.device, base=("--gates 200 --epochs 30 --group-residual"
+                                " --window 4 --commit 1 --carry --skip-e2e"
+                                " --seed 1" + extra),
+                stop_at=2, full_at=4)
+            print(f"[{'PASS' if ok else 'FAIL'}] carry checkpoint resume =="
+                  f" non-stop ({tag})  ({dt:.0f}s)")
+            if not ok:
+                print(detail)
+                failed += 1
     print(f"\n{total - failed}/{total} passed")
     sys.exit(1 if failed else 0)
 

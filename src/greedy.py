@@ -42,26 +42,30 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
                 print(f"  -> stop: no improvement for {cfg.patience} layers")
                 stop = True
 
+    carry = []   # --carry: コミットされなかった先読み層を次スライドへ受け継ぐ足場方式
     # --checkpoint: 既存ファイルがあれば凍結済み層を復元して続きから再開。
     # commit()はRNG不使用の純関数(pool/accum/pos_poolはlayersだけから決まる)
     # なので、保存済み層を先頭から1つずつ「再生」すれば内部状態もbest_acc等も
     # 中断なし実行とビット単位で一致する状態に戻る(新規に降臨するのはこの後)
     if cfg.checkpoint and os.path.exists(cfg.checkpoint):
-        fp, saved = checkpoint.load(cfg.checkpoint)
+        fp, saved, saved_carry = checkpoint.load(cfg.checkpoint)
         want = checkpoint.fingerprint(cfg)
         if fp != want:
             diff = {k: (fp.get(k), want.get(k))
                     for k in want if fp.get(k) != want.get(k)}
             raise SystemExit("--checkpoint fingerprint mismatch, refusing to"
                               f" resume (settings changed): {diff}")
-        print(f"=== resumed from checkpoint: {len(saved)} layers ===")
+        print(f"=== resumed from checkpoint: {len(saved)} layers"
+              + (f" + {len(saved_carry)} carried" if saved_carry else "") + " ===")
         for d in saved:
             L = checkpoint.rebuild(d, cfg.device)
             layers.append(L)
             track(*obj.commit(layers, L))
+        # --carry: 未コミットの先読み層も復元(soft重みのまま)。commitを通さない
+        # =状態に影響しないので、次スライドのwin先頭に差し込むだけでよい
+        carry = [checkpoint.rebuild(d, cfg.device) for d in saved_carry]
 
     t0 = time.time()
-    carry = []   # --carry: コミットされなかった先読み層を次スライドへ受け継ぐ足場方式
     while not stop and len(layers) < cfg.max_layers:
         # --stop-file: 次の層を確定した直後にきれいに終了するための合図。
         # 起動直後(layers空)は無視する = 「進行中の層を終えてから止まる」の
@@ -75,7 +79,13 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
         win, in_dim = [], obj.begin(layers, d0)
         for k in range(W):
             if k < len(carry):
-                win.append(carry[k])   # 受け継いだ層(重み保持、no-skipでin_dim=G一致)
+                # 受け継いだ層(重み保持)。位置J+i→iの移動で配線が指すプール位置は
+                # 保存される(experiment.pyの--carry注記参照)が、skip併用で次元計算を
+                # 間違えると黙って別ビットを読むので境界だけ確認しておく
+                L = carry[k]
+                assert int(max(L.ia.max(), L.ib.max())) < in_dim, (
+                    f"carried layer {k} wired for a larger pool than in_dim={in_dim}")
+                win.append(L)
             else:
                 win.append(obj.make_layer(in_dim, d0, k).to(cfg.device))
             in_dim = (in_dim + cfg.gates if cfg.skip_all else
@@ -86,7 +96,8 @@ def run_greedy(Xtr, Xte, ytr, yte, cfg):
             layers.append(L)
             track(*obj.commit(layers, L))
             if cfg.checkpoint:
-                checkpoint.save(cfg.checkpoint, layers, cfg)
+                # carryは上でwin[J:]に更新済み=この時点の「次スライドへ渡す状態」
+                checkpoint.save(cfg.checkpoint, layers, cfg, carry)
             if stop or len(layers) >= cfg.max_layers:
                 break
     print(f"  {obj.tag}: best {obj.kind} test acc = {best_acc:.4f}"
