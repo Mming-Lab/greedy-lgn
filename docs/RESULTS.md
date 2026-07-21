@@ -751,13 +751,33 @@ MNIST. The window and carry are also both switched on at once here, so their
 individual contributions are not separated (on digits the window helped alone
 and carry added on top).
 
-**Separate finding, possibly the bigger one**: this batch-512 baseline (95.28)
-beats the recorded 500-gate full-batch run for the same seed (94.36, full batch) by
-**+0.92 pt** — more than carry's margin. The published headline runs used full
-batch, while the command documented in `README.md` for that headline passes
-`--batch 512`. The documentation and the recorded run disagree, and the
-documented form is the better one. Worth confirming across seeds before any
-headline number is revised.
+### A batch/depth confound, chased down and dismissed
+
+The batch-512 baseline above (95.28, depth 111) sits well above the published
+94.64% (3-seed mean, depths 41/95/43, full batch). That gap looked at first like
+a batch effect — I wrongly attributed it to `--batch 512` twice before actually
+isolating it. It is almost entirely the **depth search**, not the batch.
+
+The published 94.64% used `--patience 10`, which stopped two of three seeds
+early (depths 41 and 43). Extending those same full-batch seeds deeper (the
+depth-curve runs) reached 95.01 / 95.24 / 95.39 at depths 79 / 95 / 117 — a
+3-seed mean of **95.21%**, still full batch. Against the batch-512 deep runs
+(95.28 / 95.24 / 95.66, mean **95.39%**), the difference is **+0.18 pt** (+0.27 /
+0 / +0.27), within seed noise:
+
+| 500-gate, residual+skip, 3 seeds | mean | depths |
+|---|---|---|
+| full batch, `--patience 10` (published headline) | 94.64 | 41/95/43 |
+| full batch, deep search | 95.21 | 79/95/117 |
+| batch 512, deep search | 95.39 | 111/90/109 |
+
+So batch size is a **speed** lever, not an accuracy one (full batch materializes
+a [rows × gates × 16] tensor that thrashes a 6 GB GPU; batch 512 is ~15× faster
+per layer at the same accuracy). The published 94.64% was low because the depth
+search was cut short on two seeds, not because of the batch setting. The
+headline number is not revised on the strength of this — a deeper `--patience`
+buys ~+0.5 pt but also increases the test-set bias of choosing depth on the
+probe, the same caveat noted in the depth-exploration section.
 
 ## Adaptive per-layer epochs (`--epoch-stop` / `--epoch-peak` / `--epoch-chain`): fixed 120 was already near-optimal
 
