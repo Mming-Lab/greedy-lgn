@@ -639,6 +639,126 @@ replacement. `residual + warm-start` is flat vs residual alone (like boost:
 overlapping cures). Idea proposed by the project owner ("start each new layer
 from an adjustable state, not random — maybe the window becomes unnecessary").
 
+**Revised below**: "retires the lookahead window" was measured on *plain*
+greedy. On the residual readout the window is *not* retired — it helps, once
+its discarded layers are carried (`--carry`). And `residual + warm-start` being
+flat holds for accuracy but hides a gate-count effect. See the next section.
+
+## Carrying the lookahead window (`--carry`) on the residual readout: stop throwing the layers away
+
+`--window W --commit J` trains W layers jointly but freezes only the first J and
+**discards the remaining W−J** — every slide rebuilds them from scratch
+(receding horizon, `src/greedy.py`). `--carry` keeps them instead, handing the
+trained weights to the next slide as scaffolding. Carry was measured before and
+lost (digits 90.2 vs 91.6) — but that was on *plain* greedy, where what it
+carried was brittle features. The open hypothesis (task 20) was that on the
+residual readout it carries something else: a correction to a running answer.
+
+digits, 3 seeds, 500 gates/layer, `--group-residual`, `--window 4 --commit 1`.
+All 12 runs bit-exact (`identical = True`):
+
+| config | mean acc | seeds | gates after simplify |
+|---|---|---|---|
+| residual only (`--window 1`) | 96.30 | 96.00 / 97.11 / 95.78 | 2126 |
+| + window 4, layers discarded | 96.81 | 97.33 / 96.00 / 97.11 | 2790 |
+| **+ window 4, `--carry`** | **97.41** | 97.11 / 97.33 / 97.78 | 2861 |
+| + `--carry --warm-start 5` | 97.48 | 98.00 / 97.33 / 97.11 | **1600** |
+
+Two results, and they are different in kind.
+
+**The window works on the residual readout, and carrying pays.** Residual +
+carried window beats residual alone by **+1.11 pt** and the discarding window by
+**+0.60 pt** (2 of 3 seeds). Carry is also the steadier of the two (spread 0.67
+vs 1.33) — consistent with the mechanism, since the discarding variant redraws
+three layers from a fresh RNG on every slide. Note the residual-only baseline
+reproduces the 96.30 recorded in the warm-start section above, on a separate
+run, which is the cross-check that these numbers are comparable.
+
+**Warm-start is flat on accuracy (+0.07 pt, i.e. nothing) but shifts the
+accuracy-per-gate curve.** Same raw circuit (~3.8k gates before simplify), but
+60% of it is removable versus ~22% for the others: identity init leaves many
+gates as passthroughs and the simplifier deletes them. Squeezing the width shows
+this is *not* free, and the first framing ("−44% gates at no cost") was
+over-provisioning on digits at 500 gates:
+
+| `--gates` | carry | carry + warm-start 5 | Δacc | Δgates |
+|---|---|---|---|---|
+| 500 | 97.41 / 2861g | 97.48 / 1600g | +0.07 | −44% |
+| 200 | 94.81 / 1206g | 94.44 / 792g | **−0.37** | −34% |
+| 100 | 89.33 / 624g | 88.52 / 461g | **−0.81** | −26% |
+
+The tighter the budget, the more accuracy warm-start gives up and the less it
+saves. But compared at *matched gate count* rather than matched `--gates`, it
+still wins: 97.4% costs 2861 gates with carry and 1600 with warm-start (−44%);
+94.8% costs 1206 versus 792 (−34%). The per-`--gates` loss is the price paid for
+gates removed, and the exchange rate is favourable.
+
+Caveats: digits only, and digits at 500 gates is over-provisioned — the MNIST
+conv runs were all capacity-limited (train ≈ test), the regime where deleting
+60% of a circuit is most likely to cost accuracy. MNIST is the judge and has not
+ruled. Idea proposed by the project owner ("stop discarding them") after
+noticing the window was unused in the headline.
+
+### `--carry` works with skip after all
+
+`--carry` was gated to no-skip ("carried layers assume constant `in_dim`"). That
+restriction was wrong — it generalised from the no-skip case. Carrying moves a
+layer from window position `J+i` to position `i`, and in every skip mode both
+the width and the *content* of what it reads are preserved:
+
+- **skip-input**: the pool is `[X ∥ h]` with `h` the previous layer's bits, so
+  for `d0 ≥ 1` every window position has `in_dim = |X| + gates`. The carried
+  layer read `[X ∥ win[0] output]` at position 1; at position 0 of the next
+  slide it reads `[X ∥ last committed layer output]` — the same layer.
+- **skip-all**: position `k` has `in_dim = pool(d0) + k·gates`, and committing
+  `J` layers grows the pool by exactly `J·gates`, so `J+i → i` lines up. The
+  appended bits are the committed layers, which are exactly the window layers
+  that preceded the carried one.
+
+Lifting the gate (digits, 3 seeds, 500 gates, `--skip-input --window 4
+--commit 1`, residual):
+
+| config | mean acc | seeds |
+|---|---|---|
+| skip + window 4, layers discarded | 97.04 | 97.11 / 96.22 / 97.78 |
+| **skip + window 4, `--carry`** | **97.56** | 97.78 / 96.89 / 98.00 |
+
+**+0.52 pt, 3 of 3 seeds** — carry pays with skip as well as without (+0.60 pt
+no-skip), and the combination is the best digits config measured here. `--carry`
+is also no longer exclusive with `--checkpoint`: the uncommitted lookahead
+layers are persisted too, so a resumed run is bit-identical to an uninterrupted
+one (`tests.py` pins both, no-skip and skip-input). Restriction spotted by the
+project owner ("skip should work at the same time, I'd think").
+
+### MNIST verdict: carry replicates, and buys a smaller circuit
+
+MNIST, seed 1, matched protocol (`--batch 512 --group-residual --skip-input
+--max-layers 120 --patience 20`), the only difference being the window and
+carry. Both runs bit-exact after simplification (`identical = True`):
+
+| config | acc | depth | gates before | after simplify | wall clock |
+|---|---|---|---|---|---|
+| window 1 (baseline) | 95.28 | 111 | 55,500 | 43,396 | 1.5 h |
+| **window 4 + `--carry`** | **95.76** | **93** | **46,500** | **37,123** | 5.7 h |
+
+**+0.48 pt**, and it wins on every circuit measure at once: 18 fewer layers and
+**14.5% fewer gates** after simplification. The digits result (+0.52 pt, 3
+seeds) replicates on MNIST in both sign and size.
+
+The honest costs: **3.9× the training time** for that +0.48 pt — carry wins on
+gate efficiency and loses on compute efficiency — and this is **one seed** on
+MNIST. The window and carry are also both switched on at once here, so their
+individual contributions are not separated (on digits the window helped alone
+and carry added on top).
+
+**Separate finding, possibly the bigger one**: this batch-512 baseline (95.28)
+beats the recorded 500-gate full-batch run for the same seed (94.36, full batch) by
+**+0.92 pt** — more than carry's margin. The published headline runs used full
+batch, while the command documented in `README.md` for that headline passes
+`--batch 512`. The documentation and the recorded run disagree, and the
+documented form is the better one. Worth confirming across seeds before any
+headline number is revised.
+
 ## Adaptive per-layer epochs (`--epoch-stop` / `--epoch-peak` / `--epoch-chain`): fixed 120 was already near-optimal
 
 Replace the fixed 120 epochs/layer with early stopping on the **gate-argmax
@@ -841,3 +961,255 @@ a spatial schedule, and the wide first layers thrash/OOM on 6 GB. A fair test
 needs MNIST (28×28) plus the memory work; deferred. The `--conv-sched`
 mechanism itself does exactly what task 16 asked (per-layer width at a fixed
 *average* budget), now on top of convolution.
+
+**MNIST referee (2026-07-18): conv loses to the dense residual champion, and
+the reason is a hard depth ceiling, not width.** The overnight batch (single
+network, residual readout, `--patience 10`, batch 2048, seed 1, `--epochs 120`)
+pitted conv against the 500-gate dense method (dense residual+skip, 3-seed
+**94.64%**):
+
+| config | best test | depth | stop | vs banner |
+|---|---|---|---|---|
+| conv C32/tree3 | 83.52% | 9 | patience | −11.1 pt |
+| conv C64/tree3 | **89.49%** | 9 | patience | −5.15 pt |
+| conv inverted-funnel 128,64,32 | — | — | OOM at layer 1 | — |
+| conv C32/tree3, `--epochs 240` | 84.68% | 8 | budget-cut¹ | −9.96 pt |
+| dense residual+skip (banner) | **94.64%** | 41–95 | — | — |
+
+¹ stopped by the batch's time cap via `--stop-file`, not a clean patience stop
+(but it had already peaked at layer 8 and was declining, so it is near its
+ceiling regardless).
+
+Three diagnostics, all pointing the same way:
+
+1. **Conv's usable depth runs out at ~9 layers — this is the real limiter.**
+   Both C32 and C64 peak at *depth 9*. Doubling the channels lifts the ceiling
+   (83.5→89.5%) but does **not** buy more depth. The cause is geometric:
+   `--conv-pool 2` collapses the feature map 28→14→7→3→1 in four layers, and
+   after that each layer only carries the C-bit channel vector (32/64 bits),
+   crawling as a narrow dense residual net. The banner's dense net stacks depth
+   41–95 to reach 94.64% — a different *shape* of resource. **Width buys the
+   ceiling; it cannot buy depth.**
+
+2. **Every config is capacity-bound, not overfit.** train ≈ test throughout
+   (C32 tops out at train 0.82, C64 at train ~0.90 with test tracking within
+   ~1 pt until the very end). The circuits cannot even fit the training set —
+   this is not a generalization failure.
+
+3. **Conv on MNIST saturates by 120 epochs; the digits "240" is not
+   extrapolable.** Layer-by-layer, `--epochs 120` and `240` differ within
+   noise (240 peaks at 84.68% vs 120's 83.52%, well inside seed-level scatter).
+   The earlier digits sweep (conv saturates ~240 ep, twice dense) does **not**
+   carry to MNIST — the "keep conv ≥120" caution can be relaxed to "120 is
+   enough" here.
+
+Two follow-ups the verdict sets up (both need a small code change, not yet
+done): (a) the inverted funnel is still unmeasured — C128's first layer OOMs in
+`commit()`, where `hard_chunked` materializes a full-resolution float feature
+map (60000×128×14×14 ≈ 6 GB) before the uint8 cast; returning uint8 per chunk
+fits it. (b) The real lever suggested by diagnostic 1 is a **pooling schedule**:
+pool only in the first layer or two (stop at 7×7), then `pool=1` to spend the
+remaining budget on *depth* instead of collapsing the map. 7×7 layers are cheap
+(~10 min each on this GPU), so 20 of them fit in ~3 h. `--conv-pool` is
+currently uniform across layers; making it per-layer is task 28's next step.
+
+**Pooling schedule (`--conv-pool-sched`, 2026-07-18): the depth-lifetime
+diagnosis is confirmed — keeping the map at 7×7 breaks the flat ceiling — but the
+limiter then shifts from depth to channel capacity.** Implemented follow-up (b):
+`--conv-pool-sched 2,2,1` pools in layers 1–2 (28→14→7) then holds 7×7 (`pool=1`)
+so later layers stay real conv layers instead of collapsing to 1×1. C64, same
+protocol (residual, `--patience 10`, batch 2048, seed 1, `--epochs 120`):
+
+| C64 conv | best test | depth | behaviour |
+|---|---|---|---|
+| flat `--conv-pool 2` (28→14→7→3→1) | 89.49% | 9 | collapses to 1×1 by layer 4, plateaus |
+| **pool-sched 2,2,1 (holds 7×7)** | **90.52%** | 8 | +1.03 pt, first to cross 90% |
+
+Layers 1–2 are bit-identical to the flat run (same pool=2, wiring, seed); the
+paths diverge at layer 3, where holding 7×7 gives +2 pt (80.75 vs 78.77) and by
+layer 6 the schedule crosses 90% — reaching flat's *entire-run best* at shallower
+depth. So the flat plateau really was the 1×1 collapse, and the mechanism
+(receptive field must stay alive to keep stacking productive depth) holds.
+
+But the win is modest (+1 pt), because past depth 8 the schedule runs into a
+**different** wall: C64's channel capacity. The overfitting signature is textbook
+— depth 8 train 0.908/test 0.905 (matched), depth 10 train 0.913/test 0.905
+(train pulls ahead), depth 14 gap 2.1 pt, depth 16 train itself declines
+(residual boosting now hurts). Unlike the flat runs (capacity-bound, train≈test),
+the pool-sched run *does* overfit — it has enough usable depth to start
+memorizing, so the bottleneck moved from "not enough depth" (fixed) to "not
+enough channels". The natural next step is C128 on the same schedule, which the
+memory fix below now unblocks.
+
+**Memory fix (`hard_chunked` → uint8, 2026-07-18): C128 commit no longer OOMs.**
+The follow-up (a) fix: `hard_chunked` now casts each batch-chunk to uint8 before
+concatenating (hard bits are exactly 0.0/1.0, so the cast is lossless), and a new
+`group_sum_hard` reduces the GroupSum over sample-chunks (group_sum is per-sample,
+so chunking dim 0 is bit-exact). Together they keep the full-resolution feature
+map from ever existing as float — the 6 GB C128 map is 1.5 GB as uint8. All 13
+regression pins stay bit-identical (the digits conv pins run one chunk =
+unchanged; the fix only changes peak memory on configs that previously OOM'd),
+and C128's layer-1 commit — the exact point that OOM'd before — now passes.
+
+## Width unlocked (8,000 gates/layer): the memorization wall
+
+*(Migrated from the retired `WHITEPAPER2.md`, 2026-07-21, with the accuracy and
+gate figures corrected against the run logs — see the note at the end.)*
+
+Lifting the per-layer budget to 8,000 gates (`--batch 1024 --epochs 60 --gates
+8000 --group-residual --skip-input`, window 1, so no gradient crosses a layer)
+reaches **97.11%** as a 3-seed mean. Then it stops, hard. Seed 1's depth sweep:
+
+| depth | train | test | |
+|---|---|---|---|
+| 8 | 99.86% | 96.90% | |
+| **10** | **100.00%** | **97.00%** | training set fully memorized |
+| 14 | 100.00% | 96.95% | |
+| 18 | 100.00% | 97.04% | +8 layers bought **+0.04 pt** |
+
+At depth 10 the network has memorized all 60,000 training images. Eight more
+layers — 64,000 more gates, 24 more minutes — bought four test samples. Not
+*zero*, curiously: test creeps 97.00 → 97.04 with train pinned at 100%, which is
+textbook boosting behaviour (margins keep widening after training error hits
+zero) and the residual readout *is* boosting. At 8,000 gates a layer it is not a
+trade worth making.
+
+Width scaling says the same thing from the other side:
+
+| width | best test | raw gates at best |
+|---|---|---|
+| 500 | 94.64% | 39.5k–58.5k |
+| 2,000 | 96.61% | 80,000 |
+| 8,000 | 97.11% | 72k–144k |
+
+Each 4× in width buys less: error shrinks ~0.85× per doubling, far from the
+~0.7× the early 500→2,000 scaling suggested. Extrapolating that law predicted
+**97.65%** at 8,000 gates; the measured 97.11% is **0.5 pt short**. There is a
+floor around 2–3% error that width alone is not touching. **Past a point, width
+buys memorization, not generalization.**
+
+### Gate efficiency: this loses clearly
+
+Absolute accuracy is one thing; **gates per point of accuracy** inverts the
+picture:
+
+| model | training | gates | MNIST |
+|---|---|---|---|
+| [LILogic Net](https://arxiv.org/abs/2511.12340) (2025) | gradient-based, learnable connectivity | **8,000** | **98.45%** |
+| [difflogic](https://arxiv.org/abs/2210.08277) small (2022) | e2e backprop | 48,000 | 97.69% |
+| difflogic large | e2e backprop | 384,000 | 98.47% |
+| this repo, 3-seed mean | layer-local only (window 1) | ~86,000 | 97.11% |
+| this repo, 2,000 × depth 40 | layer-local only (window 1) | ~65,000 | 96.61% |
+
+LILogic Net reaches **+1.3 pt on ~10× fewer gates**. That is not a near miss; it
+is a different league, and it comes from optimizing the whole network at once
+(there, including the wiring itself) — exactly what layer-local training gives
+up.
+
+Reshaping the same budget does not recover it:
+
+| shape at ~18k gates | test | | shape at ~48k gates | test |
+|---|---|---|---|---|
+| 500 × 36 | 93.6% | | 500 × 96 | 95.2% |
+| 2,000 × 9 | 94.5% | | 2,000 × 24 | 96.1% |
+| 8,000 × 2 | 92.3% | | 8,000 × 6 | 96.6% |
+
+Aspect ratio matters (too thin wastes gates on redundancy; too fat starves the
+boosting chain of correction steps), but no shape tried here closes the gap.
+Hypothesis, not a measurement: each layer optimizes for *itself*, so it hoards
+information later layers duplicate — the 500-gate circuit diagnostics measured ~50%
+functional redundancy, which fits.
+
+### What 6 GB actually constrained
+
+- 8,000 gates: comfortable (batch 1024, ~2.5 GB, 3 min/layer)
+- **16,000 gates: OOM — but not in training.** Training fits. The pool
+  *transition* did not: the code built the next layer's wiring pool with
+  `cat([X, h])`, briefly holding the old pool, the new pool, and the layer's
+  output at once (~3.2 GB of transient at that width). Fixed by allocating the
+  pool once and writing the output in place — under `--skip-input` the input
+  half never changes. Same bytes, bit-exact (pinned by the regression suite).
+  16,000 gates then trains fine, just slowly on this GPU.
+
+**The wall at 16k was the implementation, not the method or the hardware.** The
+8,000-gate runs were never memory-bound.
+
+### Correction to the previously published figures (2026-07-21)
+
+The retired whitepaper and README quoted **"97.04%, ~66k gates, 3 seeds"**. That
+pairing was a mix-up: the run logs give three seeds of 97.04 (depth 18, 118,699
+gates), 97.15 (depth 9, 59,808) and 97.13 (depth 12, 79,182). So:
+
+- **3-seed mean at each seed's best depth: 97.11%, ~86k gates** — the honest
+  representative figure
+- 97.04% / 118.7k gates = seed 1 alone
+- 97.00% / ~66k gates = seed 1 truncated to depth 10
+
+The published "97.04% / ~66k" took the accuracy from one depth and the gate
+count from another. The corrected accuracy is *higher* than published; the
+corrected gate count is also higher.
+
+## What the circuits actually look like (diagnostics)
+
+*(Migrated from the retired `WHITEPAPER1.md`, 2026-07-21.)*
+
+Two standalone tools ([`tools/diagnose.py`](../tools/diagnose.py),
+[`tools/dynamics.py`](../tools/dynamics.py)) inspect the trained circuits:
+
+- **Warm-start has a fingerprint.** Plain greedy spreads over the 8 simple gates
+  (~9–11% each, constants ~0.5%); warm-start collapses the distribution onto
+  gate A (pass-through, 39%; A-family ~70%). The identity bias is literally
+  visible in the learned circuit, and it explains why warm layers are barely
+  touched by training (62% keep their init) and simplify less (their
+  pass-throughs are live).
+- **~50% functional redundancy.** Half the gates produce an output column
+  identical or complementary to an earlier gate — yet the simplifier's
+  *structural* duplicate-merge finds zero (different wiring, same behaviour on
+  the data). A quantified gap, honestly not the same as logical equivalence.
+- **Recurrent cells are fading-memory maps, with real oscillators.** Rolling a
+  trained `--seq` cell forward under blank input: the accuracy winner
+  (warm-start) is a contractive map converging to a single fixed point in 2–4
+  steps — an echo-state / fading-memory regime. But plain `--seq` spontaneously
+  grows period-2 and period-6 limit cycles (oscillators built from logic gates
+  and a register), just on the losing configuration.
+
+## What this borrows
+
+Almost every ingredient is prior work; this section is about being explicit, not
+claiming credit.
+
+| piece | where it comes from |
+|---|---|
+| Logic gate networks, FPGA-friendly inference | [difflogic](https://github.com/Felix-Petersen/difflogic) (Petersen et al., NeurIPS 2022) — the platform, not mine |
+| Convolutional logic gates, post-training synthesis | [conv-DLGN](https://arxiv.org/abs/2411.04732) (NeurIPS 2024) |
+| Recurrent logic gates, temporal state | [RDDLGN](https://arxiv.org/abs/2508.06097) — `--seq` follows its wiring |
+| Residual readout | plain boosting / deep supervision (standard) |
+| Grow-and-freeze, adaptive depth | Cascade-Correlation (Fahlman & Lebiere, 1990) |
+| Local per-layer objectives | Forward-Forward (Hinton, 2022); block-wise greedy (Belilovsky et al., 2019) |
+
+I have not surveyed the literature properly. If any of this — or the combination
+— duplicates prior work, that is expected; please open an issue so I can point
+to it.
+
+## How much backprop is actually used (2026-07-21)
+
+Worth stating precisely, because the repo's older framing overclaimed.
+
+**With `--window 1` (the default, and what every published number here used):
+no gradient crosses a layer.** Each layer is trained alone against a local loss,
+then discretized and frozen.
+
+**With `--window W` for W > 1, gradients cross W layers.** The window's layers
+are chained in one autograd graph (`next_pool` concatenates the previous layer's
+output with no `detach`), the optimizer holds every window layer's parameters,
+and with the default `--win-loss last` the loss on the final window layer
+backpropagates through all W. That is backpropagation, bounded to W layers.
+
+The distinction that survives: gradients never enter the **frozen** prefix, so
+the distance a gradient travels is capped at W regardless of total depth (93+
+layers in the deepest runs here). That is still structurally different from
+end-to-end training, but "backpropagation-free" is only accurate at W = 1.
+
+Results obtained with a window must be labelled as such. In this document that
+means the lookahead-window rows of the fixed-budget ladder (W = 2) and the
+`--carry` results (W = 4).
