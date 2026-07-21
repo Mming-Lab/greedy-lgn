@@ -106,10 +106,23 @@ class ConvLogicLayer(nn.Module):
 def hard_chunked(L, x, budget=120_000_000):
     """convのhardをバッチ分割で評価。葉テンソル [chunk, C, L, HW] がMNISTでは
     巨大(chunk2048で3.2GB)なので、chunk*C*L*HW を budget 以下に抑える。
-    x はuint8プールでも可(チャンク単位でfloatへ。float入力では恒等・無コピー)"""
+    x はuint8プールでも可(チャンク単位でfloatへ。float入力では恒等・無コピー)。
+    返り値はuint8(ハードビットは厳密に0.0/1.0=可逆)。フル解像度floatマップの
+    実体化を避けるための要 — C128等で最終マップ(例 60000×128×14×14)がfloatだと
+    6GBを超えてcommitでOOMした(2026-07-18)。uint8なら1/4で収まり、後段のGroupSumも
+    group_sum_hardがサンプル分割でfloat化するのでピークは定数化する。"""
     per = max(1, L.C * L.L * L.H * L.W)
     chunk = max(64, budget // per)
-    return torch.cat([L.hard(c.float()) for c in x.split(chunk)])
+    return torch.cat([L.hard(c.float()).to(torch.uint8) for c in x.split(chunk)])
+
+
+def group_sum_hard(h, n_class, tau, budget=120_000_000):
+    """(uint8可の)ハードビット [N, bits] のGroupSumをサンプル分割で計算。
+    group_sumはサンプルごと独立(dim0の各サンプルでdim1のビットを縮約)なので、
+    サンプル分割は端数の群構成も含めて厳密にビット等価。フル解像度をfloat化せずに
+    済ませる(commitのOOM対策。h.split→チャンクだけfloatへ、出力[chunk,n_class]は微小)"""
+    chunk = max(64, budget // max(1, h.shape[1]))
+    return torch.cat([group_sum(c.float(), n_class, tau) for c in h.split(chunk)])
 
 
 class ConvGroupSum:
@@ -134,9 +147,11 @@ class ConvGroupSum:
         Cin, H, W = self.shape
         sched = getattr(cfg, "conv_sched", None)
         cdesc = f"C={','.join(map(str, sched))}" if sched else f"C={cfg.conv}"
+        psched = getattr(cfg, "conv_pool_sched", None)
+        pdesc = f"pool={','.join(map(str, psched))}" if psched else f"pool={cfg.conv_pool}"
         return (f"=== (A''') Greedy layer-wise, convolutional logic kernels"
                 f" ({cdesc}, k={cfg.conv_k}, tree={cfg.conv_tree},"
-                f" pool={cfg.conv_pool}) ==="
+                f" {pdesc}) ==="
                 + (" [residual]" if cfg.group_residual else ""))
     def begin(self, layers, d0):
         return self.pool_tr.shape[1]
@@ -148,10 +163,19 @@ class ConvGroupSum:
         if sched:
             return sched[min(d0, len(sched) - 1)]
         return self.cfg.conv
+    def _pool(self, d0):
+        """層d0のプーリング係数。--conv-pool-sched でスケジュール指定(例 2,2,1,1 =
+        層1-2だけpoolして7×7で止め、以降pool=1で深さを稼ぐ=タスク28の深さ寿命への
+        回答)、未指定なら全層 cfg.conv_pool 一定。範囲外の深さは最後の値を使い回す"""
+        sched = getattr(self.cfg, "conv_pool_sched", None)
+        if sched:
+            return sched[min(d0, len(sched) - 1)]
+        return self.cfg.conv_pool
     def make_layer(self, in_dim, d0, k):
         cfg = self.cfg
         Cin, H, W = self.shape
-        pool = cfg.conv_pool if min(H, W) >= 2 * cfg.conv_pool else 1
+        p = self._pool(d0)
+        pool = p if p > 1 and min(H, W) >= 2 * p else 1
         C = self._channels(d0)
         return ConvLogicLayer(Cin, H, W, C, cfg.conv_k, cfg.conv_tree, pool,
                               seed=cfg.seed * 100 + d0 + k + 1)
@@ -175,17 +199,17 @@ class ConvGroupSum:
             stop_check=make_stop_check(win, cfg, d0, self))
     def commit(self, layers, L):
         cfg = self.cfg
-        h_tr = hard_chunked(L, self.pool_tr)
+        h_tr = hard_chunked(L, self.pool_tr)   # uint8(フル解像度float回避)
         h_te = hard_chunked(L, self.pool_te)
         tau = self._tau(h_tr.shape[1])
-        s_tr = group_sum(h_tr, cfg.n_class, tau)
-        s_te = group_sum(h_te, cfg.n_class, tau)
+        s_tr = group_sum_hard(h_tr, cfg.n_class, tau)   # サンプル分割でfloat化=ビット等価
+        s_te = group_sum_hard(h_te, cfg.n_class, tau)
         if cfg.group_residual:
             self.accum_tr = self.accum_tr + s_tr
             self.accum_te = self.accum_te + s_te
             s_tr, s_te = self.accum_tr, self.accum_te
         a_tr, a_te = accuracy(s_tr, self.ytr), accuracy(s_te, self.yte)
-        # hardビット(厳密に0.0/1.0)で前進、常駐はuint8。
+        # hardビット(厳密に0.0/1.0)で前進、常駐はuint8(hard_chunkedが既にuint8)。
         # 形状は層自身から取る(旧実装はmake_layerが置く_pending_shape依存で、
         # make_layerを通らないチェックポイント再開リプレイだと前進しなかった。
         # 値は同一(make_layerのCとL.C、L.Hp/L.Wpは同物)なのでビット等価)
@@ -199,7 +223,7 @@ class ConvGroupSum:
         cfg, x = self.cfg, X
         acc = torch.zeros(len(X), cfg.n_class, device=X.device)
         for L in layers:
-            x = hard_chunked(L, x)
+            x = hard_chunked(L, x)   # uint8
             if cfg.group_residual:
-                acc = acc + group_sum(x, cfg.n_class, self._tau(x.shape[1]))
-        return acc if cfg.group_residual else group_sum(x, cfg.n_class, 1.0)
+                acc = acc + group_sum_hard(x, cfg.n_class, self._tau(x.shape[1]))
+        return acc if cfg.group_residual else group_sum_hard(x, cfg.n_class, 1.0)
