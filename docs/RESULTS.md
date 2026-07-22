@@ -730,26 +730,33 @@ layers are persisted too, so a resumed run is bit-identical to an uninterrupted
 one (`tests.py` pins both, no-skip and skip-input). Restriction spotted by the
 project owner ("skip should work at the same time, I'd think").
 
-### MNIST verdict: carry replicates, and buys a smaller circuit
+### MNIST verdict: the accuracy win replicates across 3 seeds; the gate win does not
 
-MNIST, seed 1, matched protocol (`--batch 512 --group-residual --skip-input
---max-layers 120 --patience 20`), the only difference being the window and
-carry. Both runs bit-exact after simplification (`identical = True`):
+MNIST, 3 seeds, matched protocol (`--batch 512 --group-residual --skip-input
+--window 4 --commit 1 --max-layers 120 --patience 20`), the only difference being
+`--carry`. Every run bit-exact after simplification (`identical = True`):
 
-| config | acc | depth | gates before | after simplify | wall clock |
-|---|---|---|---|---|---|
-| window 1 (baseline) | 95.28 | 111 | 55,500 | 43,396 | 1.5 h |
-| **window 4 + `--carry`** | **95.76** | **93** | **46,500** | **37,123** | 5.7 h |
+| seed | carry+skip (acc / depth / gates) | skip only (acc / depth / gates) | Δacc |
+|---|---|---|---|
+| 1 | 95.76 / 93 / 37,123 | 95.28 / 111 / 43,396 | +0.48 |
+| 2 | 95.88 / 118 / 46,743 | 95.24 / 90 / 35,323 | +0.64 |
+| 3 | 96.04 / 113 / 44,905 | 95.66 / 109 / 42,552 | +0.38 |
+| **mean** | **95.89 / — / 42,924** | 95.39 / — / 40,424 | **+0.50** |
 
-**+0.48 pt**, and it wins on every circuit measure at once: 18 fewer layers and
-**14.5% fewer gates** after simplification. The digits result (+0.52 pt, 3
-seeds) replicates on MNIST in both sign and size.
+**The accuracy win is solid: +0.50 pt as a 3-seed mean, carry ahead on all three
+seeds** (+0.38 to +0.64), matching the digits result (+0.52 pt). The digits
+finding replicates on MNIST.
 
-The honest costs: **3.9× the training time** for that +0.48 pt — carry wins on
-gate efficiency and loses on compute efficiency — and this is **one seed** on
-MNIST. The window and carry are also both switched on at once here, so their
-individual contributions are not separated (on digits the window helped alone
-and carry added on top).
+**The gate-efficiency win does not survive three seeds.** Seed 1 alone looked
+like carry won on every measure at once (18 fewer layers, 14.5% fewer gates); an
+earlier version of this section reported it that way. Across three seeds carry
+uses **~6% more gates on average** (−14.5% on seed 1, but +32% on seed 2 and
++5.5% on seed 3). Carry activates the depth search — it tends to keep climbing —
+so it buys accuracy but not, in general, a smaller circuit. The honest statement
+is: **carry trades ~+0.50 pt of accuracy for ~+6% gates and ~3.9× training
+time** (window 4 trains four layers per committed layer). Window and carry are
+switched on together here, so their individual contributions are not separated
+(on digits the window helped alone and carry added on top).
 
 ### A batch/depth confound, chased down and dismissed
 
